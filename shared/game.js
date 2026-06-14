@@ -105,6 +105,10 @@ export class Game {
     this.events.length = 0;
 
     // --- ships: movement + charge fire ---
+    // This MUST stay identical to the client's stepLocal() so prediction is
+    // exact. Ships intentionally pass THROUGH asteroids — any server-only
+    // position nudge the client can't predict (e.g. a collision bounce) shows up
+    // as constant movement jitter.
     for (const s of this.ships.values()) {
       const inp = s.input;
       s.vx += inp.mx * ACCEL * DT;
@@ -113,31 +117,14 @@ export class Game {
       if (sp > MAX_SPEED) { s.vx = s.vx / sp * MAX_SPEED; s.vy = s.vy / sp * MAX_SPEED; }
       s.vx *= FRICTION; s.vy *= FRICTION;
       s.x += s.vx * DT; s.y += s.vy * DT;
-      if (s.x < SHIP_RADIUS) { s.x = SHIP_RADIUS; s.vx = Math.abs(s.vx) * 0.5; }
-      if (s.x > WORLD.w - SHIP_RADIUS) { s.x = WORLD.w - SHIP_RADIUS; s.vx = -Math.abs(s.vx) * 0.5; }
-      if (s.y < SHIP_RADIUS) { s.y = SHIP_RADIUS; s.vy = Math.abs(s.vy) * 0.5; }
-      if (s.y > WORLD.h - SHIP_RADIUS) { s.y = WORLD.h - SHIP_RADIUS; s.vy = -Math.abs(s.vy) * 0.5; }
+      s.x = Math.max(SHIP_RADIUS, Math.min(WORLD.w - SHIP_RADIUS, s.x));
+      s.y = Math.max(SHIP_RADIUS, Math.min(WORLD.h - SHIP_RADIUS, s.y));
       s.angle = inp.aim;
 
       if (inp.shoot) {
         s.charge += DT * 1000;
         if (s.charge >= CHARGE_MS) { this.fire(s); s.charge = 0; }
       } else s.charge = 0;
-    }
-
-    // --- ships bounce off asteroids (no damage) ---
-    for (const s of this.ships.values()) {
-      for (const r of this.rocks.values()) {
-        const dx = s.x - r.x, dy = s.y - r.y;
-        const rr = SHIP_RADIUS + r.radius, d2 = dx * dx + dy * dy;
-        if (d2 < rr * rr && d2 > 0.01) {
-          const d = Math.sqrt(d2), nx = dx / d, ny = dy / d;
-          s.x = r.x + nx * rr; s.y = r.y + ny * rr;     // push out of the rock
-          const vdot = s.vx * nx + s.vy * ny;
-          if (vdot < 0) { s.vx -= 1.4 * vdot * nx; s.vy -= 1.4 * vdot * ny; }
-          s.vx *= 0.6; s.vy *= 0.6;
-        }
-      }
     }
 
     // --- asteroids drift + bounce off arena walls ---
