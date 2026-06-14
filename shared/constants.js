@@ -21,7 +21,7 @@ export const BULLET_SPEED = 1200;       // px/s — fast projectile
 export const BULLET_TTL = 1.2;          // seconds → ~1440px range
 export const BULLET_RADIUS = 12;        // bigger projectile / hit area
 export const BULLET_DAMAGE = 50;        // two missiles down a full-HP ship
-export const FIRE_COOLDOWN_MS = 1200;   // ~0.8 launches/sec — slow, deliberate trigger
+export const CHARGE_MS = 1000;          // hold-to-fire: ms of holding before a missile launches
 
 // Networking / interest management
 export const VIEW_RADIUS = 1500;        // detailed entities sent within range (wider for zoom-out)

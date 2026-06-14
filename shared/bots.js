@@ -74,9 +74,9 @@ export function thinkBots(game) {
     s.input.mx = nx * radial * 0.8 + (-ny) * strafe;
     s.input.my = ny * radial * 0.8 + (nx) * strafe;
 
-    // fire when roughly facing the target and in range
-    const aimErr = Math.abs(normAngle(Math.atan2(ay, ax) - Math.atan2(dy, dx)));
-    s.input.shoot = dist < BOT_VIEW && aimErr < 0.25;
+    // hold fire whenever a target is in range — the charge weapon launches on
+    // its own after CHARGE_MS, and the bot keeps aiming (with lead) the while.
+    s.input.shoot = dist < BOT_VIEW;
   }
 }
 

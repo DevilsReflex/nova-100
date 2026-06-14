@@ -3,7 +3,7 @@
 import {
   WORLD, DT, SHIP_RADIUS, ACCEL, MAX_SPEED, FRICTION, SHIP_MAX_HP,
   RESPAWN_MS, BULLET_SPEED, BULLET_TTL, BULLET_RADIUS, BULLET_DAMAGE,
-  FIRE_COOLDOWN_MS,
+  CHARGE_MS,
 } from './constants.js';
 
 let nextId = 1;
@@ -23,7 +23,7 @@ export class Ship {
     this.score = 0;
     this.kills = 0;
     this.deaths = 0;
-    this.cooldown = 0;          // ms until next shot allowed
+    this.charge = 0;            // ms the fire button has been held (hold-to-charge)
     this.respawnAt = 0;         // timestamp; 0 = alive
     // input state (set by network for humans, by AI for bots)
     this.input = { mx: 0, my: 0, aim: 0, shoot: false, seq: 0 };
@@ -39,6 +39,7 @@ export class Ship {
     this.angle = Math.random() * Math.PI * 2;
     this.hp = SHIP_MAX_HP;
     this.respawnAt = 0;
+    this.charge = 0;
   }
 
   get alive() { return this.respawnAt === 0; }
@@ -101,10 +102,13 @@ export class Game {
       if (s.y > WORLD.h - SHIP_RADIUS) { s.y = WORLD.h - SHIP_RADIUS; s.vy = 0; }
       s.angle = inp.aim;
 
-      if (s.cooldown > 0) s.cooldown -= DT * 1000;
-      if (inp.shoot && s.cooldown <= 0) {
-        this.fire(s);
-        s.cooldown = FIRE_COOLDOWN_MS;
+      // hold-to-charge: accumulate while firing; launch at CHARGE_MS, then
+      // recharge if still held. Releasing cancels the charge.
+      if (inp.shoot) {
+        s.charge += DT * 1000;
+        if (s.charge >= CHARGE_MS) { this.fire(s); s.charge = 0; }
+      } else {
+        s.charge = 0;
       }
     }
 

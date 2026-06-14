@@ -9,7 +9,7 @@ const CFG = {
   INPUT_RATE: 30,           // input packets / sec
   INTERP_DELAY: 100,        // ms we render other ships in the past
   ZOOM: 0.72,               // camera zoom-out (<1 shows more of the arena)
-  FIRE_COOLDOWN_MS: 1200,   // mirrors server; drives muzzle flash + reload reticle
+  CHARGE_MS: 1000,          // hold-to-fire: ms of holding before a missile launches
 };
 
 // ---------- canvas ----------
@@ -32,7 +32,7 @@ const me = { x: CFG.WORLD.w / 2, y: CFG.WORLD.h / 2, vx: 0, vy: 0, hp: 100, aliv
 let serverMe = null;
 let score = 0, kills = 0, deaths = 0, respawnIn = 0, aliveCount = 0, playerCount = 0;
 
-// other ships interpolation buffers: id -> { prev:{t,...}, cur:{t,...} }
+// other ships: id -> { buf: [{t,x,y,angle,alive,hp,bot}, …] } interpolation history
 const ships = new Map();
 let board = [];
 let bullets = [];          // current view missiles: [x, y, color, vx, vy]
@@ -42,7 +42,7 @@ const rings = [];          // expanding shockwaves: {x,y,color,r0,r1,t,max}
 let shake = 0;             // screen-shake magnitude (decays each frame)
 let flash = 0;             // brief screen flash on very close kills
 let muzzle = 0;            // muzzle-flash decay for own ship
-let lastFireT = -1e9;      // client fire cadence (cosmetic; server stays authoritative)
+let chargeStart = 0;       // performance.now() when current charge began (0 = not charging)
 let fps = 60;              // smoothed frames/sec, shown in the HUD
 
 // ---------- input ----------
@@ -133,17 +133,23 @@ function applySnapshot(s) {
   while (inputHistory.length && inputHistory[0].seq <= m.seq) inputHistory.shift();
   for (const cmd of inputHistory) stepLocal(me, cmd.mx, cmd.my);
 
-  // --- other ships into interpolation buffers ---
+  // --- other ships into per-entity interpolation history ---
   const now = performance.now();
   const seen = new Set();
   for (const arr of s.ships) {
     const [id, x, y, angle, alive, hp, bot] = arr;
     seen.add(id);
     if (id === myId) continue;
-    let e = ships.get(id);
     const sample = { t: now, x, y, angle, alive, hp, bot };
-    if (!e) ships.set(id, { prev: sample, cur: sample });
-    else { e.prev = e.cur; e.cur = sample; }
+    const e = ships.get(id);
+    if (!e) { ships.set(id, { buf: [sample] }); }
+    else {
+      e.buf.push(sample);
+      // keep ~400ms of history so we can interpolate INTERP_DELAY in the past
+      // even when snapshots arrive irregularly
+      const cutoff = now - 400;
+      while (e.buf.length > 2 && e.buf[0].t < cutoff) e.buf.shift();
+    }
   }
   for (const id of ships.keys()) if (!seen.has(id)) ships.delete(id);
 
@@ -188,12 +194,20 @@ function startInputLoop() {
       stepLocal(me, mx, my);                       // client-side prediction
       inputHistory.push({ seq: inputSeq, mx, my });
       if (inputHistory.length > 120) inputHistory.shift();
-      // cosmetic launch feedback when our cooldown is up
+      // hold-to-charge feedback (server owns the actual launch). Holding for
+      // CHARGE_MS fires a missile; releasing cancels the charge.
       const t = performance.now();
-      if (shoot && t - lastFireT >= CFG.FIRE_COOLDOWN_MS) {
-        lastFireT = t; muzzle = 1;
-        shake = Math.min(20, shake + 5);            // recoil kick
+      if (shoot) {
+        if (!chargeStart) chargeStart = t;
+        if (t - chargeStart >= CFG.CHARGE_MS) {       // fully charged → launch
+          chargeStart = t;                            // recharge while still held
+          muzzle = 1; shake = Math.min(22, shake + 7);
+        }
+      } else {
+        chargeStart = 0;
       }
+    } else {
+      chargeStart = 0;
     }
     ws.send(JSON.stringify({ t: 'input', seq: inputSeq, mx, my, aim, shoot }));
   }, 1000 / CFG.INPUT_RATE);
@@ -263,15 +277,14 @@ function render(now) {
     drawMissile(sx, sy, Math.atan2(vy, vx), color, Z);
   }
 
-  // other ships (interpolated)
+  // other ships — sampled from each ship's history at (now − INTERP_DELAY)
   const renderTime = now - CFG.INTERP_DELAY;
   for (const e of ships.values()) {
-    const p = interp(e, renderTime);
+    const p = sampleAt(e, renderTime);
     if (!p.alive) continue;
     const [sx, sy] = w2s(p.x, p.y);
     if (sx < -50 || sy < -50 || sx > innerWidth + 50 || sy > innerHeight + 50) continue;
-    const moving = Math.hypot(e.cur.x - e.prev.x, e.cur.y - e.prev.y) > 1.5;
-    drawShip(sx, sy, p.angle, p.bot ? '#9fb3c8' : '#ff6b6b', p.hp, false, moving, Z);
+    drawShip(sx, sy, p.angle, p.bot ? '#9fb3c8' : '#ff6b6b', p.hp, false, p.moving, Z);
   }
 
   // self (predicted)
@@ -317,16 +330,23 @@ function render(now) {
   requestAnimationFrame(render);
 }
 
-function interp(e, t) {
-  const a = e.prev, b = e.cur;
-  if (b.t === a.t) return b;
-  let f = (t - a.t) / (b.t - a.t);
-  f = Math.max(0, Math.min(1, f));
+// sample an entity's history at time t (= now − INTERP_DELAY), interpolating
+// between the two buffered snapshots that bracket t
+function sampleAt(e, t) {
+  const buf = e.buf, n = buf.length;
+  if (n === 1) return { ...buf[0], moving: false };
+  let i = n - 1;
+  while (i > 0 && buf[i].t > t) i--;          // last sample with t <= renderTime
+  const a = buf[i], b = buf[i + 1] || a;      // no b → t is newer than newest
+  const span = b.t - a.t;
+  let f = span > 0 ? (t - a.t) / span : 0;
+  f = f < 0 ? 0 : f > 1 ? 1 : f;
   return {
     x: a.x + (b.x - a.x) * f,
     y: a.y + (b.y - a.y) * f,
     angle: lerpAngle(a.angle, b.angle, f),
     alive: b.alive, hp: b.hp, bot: b.bot,
+    moving: Math.hypot(b.x - a.x, b.y - a.y) > 1.5,
   };
 }
 function lerpAngle(a, b, f) {
@@ -453,7 +473,7 @@ function hexA(hex, a) {
 
 // crosshair + missile reload indicator at the mouse
 function drawReticle(now) {
-  const prog = Math.min(1, (now - lastFireT) / CFG.FIRE_COOLDOWN_MS);
+  const prog = chargeStart ? Math.min(1, (now - chargeStart) / CFG.CHARGE_MS) : 0;
   const x = mouse.x, y = mouse.y, R = 15;
   ctx.save();
   ctx.lineWidth = 2;
@@ -489,7 +509,7 @@ function drawMinimap() {
   ctx.fillRect(x0, y0, S, S); ctx.strokeRect(x0, y0, S, S);
   const sx = S / CFG.WORLD.w, sy = S / CFG.WORLD.h;
   for (const e of ships.values()) {
-    const p = e.cur; if (!p.alive) continue;
+    const p = e.buf[e.buf.length - 1]; if (!p.alive) continue;
     ctx.fillStyle = p.bot ? 'rgba(159,179,200,.7)' : '#ff6b6b';
     ctx.fillRect(x0 + p.x * sx - 1, y0 + p.y * sy - 1, 2, 2);
   }
