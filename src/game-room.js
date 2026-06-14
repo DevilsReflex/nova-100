@@ -182,7 +182,7 @@ export class GameRoom {
       const bullets = [];
       for (const b of projectiles) {
         if (Math.abs(b.x - mx) < VIEW_RADIUS && Math.abs(b.y - my) < VIEW_RADIUS)
-          bullets.push([Math.round(b.x), Math.round(b.y), b.color, +Math.atan2(b.vy, b.vx).toFixed(2)]);
+          bullets.push([Math.round(b.x), Math.round(b.y), b.color, Math.round(b.vx), Math.round(b.vy)]);
       }
       const fx = [];
       for (const e of events) {

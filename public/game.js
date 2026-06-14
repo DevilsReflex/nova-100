@@ -35,7 +35,8 @@ let score = 0, kills = 0, deaths = 0, respawnIn = 0, aliveCount = 0, playerCount
 // other ships interpolation buffers: id -> { prev:{t,...}, cur:{t,...} }
 const ships = new Map();
 let board = [];
-let bullets = [];          // current view missiles: [x, y, color, angle]
+let bullets = [];          // current view missiles: [x, y, color, vx, vy]
+let bulletsAt = 0;         // performance.now() when `bullets` arrived (for extrapolation)
 const fxList = [];         // local particle effects
 const rings = [];          // expanding shockwaves: {x,y,color,r0,r1,t,max}
 let shake = 0;             // screen-shake magnitude (decays each frame)
@@ -146,7 +147,7 @@ function applySnapshot(s) {
   }
   for (const id of ships.keys()) if (!seen.has(id)) ships.delete(id);
 
-  bullets = s.bullets;
+  bullets = s.bullets; bulletsAt = now;
   for (const ev of s.fx) {
     const [x, y, t] = ev;
     spawnFx(x, y, t);
@@ -252,12 +253,14 @@ function render(now) {
 
   drawBounds(w2s);
 
-  // missiles (few, so we can afford oriented bodies + glowing trails)
+  // missiles — extrapolate along velocity between 20 Hz snapshots so fast
+  // projectiles glide every frame instead of teleporting once per snapshot.
+  const bAge = Math.min(0.2, (now - bulletsAt) / 1000);
   for (const b of bullets) {
-    const [bx, by, color, ang] = b;
-    const [sx, sy] = w2s(bx, by);
+    const [bx, by, color, vx, vy] = b;
+    const [sx, sy] = w2s(bx + vx * bAge, by + vy * bAge);
     if (sx < -60 || sy < -60 || sx > innerWidth + 60 || sy > innerHeight + 60) continue;
-    drawMissile(sx, sy, ang || 0, color, Z);
+    drawMissile(sx, sy, Math.atan2(vy, vx), color, Z);
   }
 
   // other ships (interpolated)
