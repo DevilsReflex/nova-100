@@ -172,34 +172,46 @@ setInterval(() => {
     const room = rooms.get(roomId); if (!room) continue;
     const game = room.game;
     const board = leaderboard(game);
-    const totalAlive = [...game.ships.values()].filter(s => s.alive).length;
+    let totalAlive = 0;
     const allShips = [];
     for (const s of game.ships.values()) {
+      if (s.alive) totalAlive++;
       allShips.push([s.id, Math.round(s.x), Math.round(s.y), +s.angle.toFixed(2),
         s.alive ? 1 : 0, Math.max(0, Math.round(s.hp)), s.isBot ? 1 : 0]);
     }
     const killFeed = game.events.filter(e => e.t === 'kill').map(e => ({ k: e.killer, v: e.victim }));
 
+    // serialize the shared roster/board/killfeed once, not once per client
+    const shipsJson = JSON.stringify(allShips);
+    const boardJson = JSON.stringify(board);
+    const killsJson = JSON.stringify(killFeed);
+    const players = game.ships.size;
+
     for (const ws of sockets) {
       const c = clients.get(ws);
       const me = game.ships.get(c.shipId);
       if (!me) continue;
+      const mx = me.x, my = me.y;
       const bullets = [];
       for (const b of game.bullets) {
-        if (Math.abs(b.x - me.x) < VIEW_RADIUS && Math.abs(b.y - me.y) < VIEW_RADIUS)
+        if (Math.abs(b.x - mx) < VIEW_RADIUS && Math.abs(b.y - my) < VIEW_RADIUS)
           bullets.push([Math.round(b.x), Math.round(b.y), b.color, +Math.atan2(b.vy, b.vx).toFixed(2)]);
       }
-      const fx = game.events.filter(e => e.t !== 'kill' &&
-        Math.abs(e.x - me.x) < VIEW_RADIUS && Math.abs(e.y - me.y) < VIEW_RADIUS)
-        .map(e => [Math.round(e.x), Math.round(e.y), e.t]);
-      ws.send(JSON.stringify({
-        t: 'snap', now,
-        me: { x: me.x, y: me.y, vx: me.vx, vy: me.vy, hp: me.hp, seq: me.lastSeq,
-          alive: me.alive, score: me.score, kills: me.kills, deaths: me.deaths,
-          respawnIn: me.alive ? 0 : Math.max(0, me.respawnAt - now) },
-        ships: allShips, bullets, fx, kills: killFeed, board,
-        alive: totalAlive, players: game.ships.size, room: roomId,
-      }));
+      const fx = [];
+      for (const e of game.events) {
+        if (e.t !== 'kill' && Math.abs(e.x - mx) < VIEW_RADIUS && Math.abs(e.y - my) < VIEW_RADIUS)
+          fx.push([Math.round(e.x), Math.round(e.y), e.t]);
+      }
+      const meJson = JSON.stringify({
+        x: me.x, y: me.y, vx: me.vx, vy: me.vy, hp: me.hp, seq: me.lastSeq,
+        alive: me.alive, score: me.score, kills: me.kills, deaths: me.deaths,
+        respawnIn: me.alive ? 0 : Math.max(0, me.respawnAt - now),
+      });
+      ws.send('{"t":"snap","now":' + now + ',"me":' + meJson +
+        ',"ships":' + shipsJson + ',"bullets":' + JSON.stringify(bullets) +
+        ',"fx":' + JSON.stringify(fx) + ',"kills":' + killsJson +
+        ',"board":' + boardJson + ',"alive":' + totalAlive +
+        ',"players":' + players + ',"room":' + roomId + '}');
     }
   }
 }, 1000 / SNAPSHOT_RATE);

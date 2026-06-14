@@ -17,26 +17,44 @@ export function botName(i) {
   return tag ? `${base}-${tag}` : base;
 }
 
+// Re-scanning every bot's nearest target every tick is O(N²) and, at 100 ships,
+// the heaviest CPU cost on the server. Cache each bot's target and only re-scan
+// periodically (staggered across bots) or when the target dies / drifts away.
+const RETARGET_TICKS = 8;
+
 export function thinkBots(game) {
   botSeq++;
   for (const s of game.ships.values()) {
     if (!s.isBot || !s.alive) continue;
 
-    // find nearest living enemy within awareness range
-    let target = null, best = BOT_VIEW * BOT_VIEW;
-    for (const o of game.ships.values()) {
-      if (o === s || !o.alive) continue;
-      const dx = o.x - s.x, dy = o.y - s.y;
-      const d2 = dx * dx + dy * dy;
-      if (d2 < best) { best = d2; target = o; }
+    // reuse the cached target while it's still valid
+    let target = s._target != null ? game.ships.get(s._target) : null;
+    if (target && !target.alive) target = null;
+    if (target) {
+      const ex = target.x - s.x, ey = target.y - s.y;
+      const lim = BOT_VIEW * 1.4;
+      if (ex * ex + ey * ey > lim * lim) target = null;     // drifted out of range
+    }
+    // otherwise (or on this bot's periodic slot) re-scan for the nearest enemy
+    if (!target || (botSeq + s.id) % RETARGET_TICKS === 0) {
+      let bestId = null, best = BOT_VIEW * BOT_VIEW;
+      for (const o of game.ships.values()) {
+        if (o === s || !o.alive) continue;
+        const dx = o.x - s.x, dy = o.y - s.y;
+        const d2 = dx * dx + dy * dy;
+        if (d2 < best) { best = d2; bestId = o.id; }
+      }
+      s._target = bestId;
+      target = bestId != null ? game.ships.get(bestId) : null;
     }
 
     if (!target) {
-      // wander toward arena center-ish with gentle drift
+      // wander with gentle drift — `continue`, not `return`: return skipped
+      // every remaining bot in this tick.
       s.input.mx = Math.cos(botSeq * 0.013 + s.id) * 0.5;
       s.input.my = Math.sin(botSeq * 0.017 + s.id) * 0.5;
       s.input.shoot = false;
-      return;
+      continue;
     }
 
     const dx = target.x - s.x, dy = target.y - s.y;

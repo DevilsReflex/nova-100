@@ -15,11 +15,13 @@ const CFG = {
 // ---------- canvas ----------
 const cv = document.getElementById('game');
 const ctx = cv.getContext('2d');
-let DPR = Math.min(window.devicePixelRatio || 1, 2);
+let DPR = Math.min(window.devicePixelRatio || 1, 1.5);   // cap fill-rate on hi-DPI displays
+let vign = null;                                         // cached vignette gradient (rebuilt on resize)
 function resize() {
-  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  DPR = Math.min(window.devicePixelRatio || 1, 1.5);
   cv.width = innerWidth * DPR; cv.height = innerHeight * DPR;
   cv.style.width = innerWidth + 'px'; cv.style.height = innerHeight + 'px';
+  vign = null;
 }
 addEventListener('resize', resize); resize();
 
@@ -52,6 +54,7 @@ let shake = 0;             // screen-shake magnitude (decays each frame)
 let flash = 0;             // brief screen flash on very close kills
 let muzzle = 0;            // muzzle-flash decay for own ship
 let lastFireT = -1e9;      // client fire cadence (cosmetic; server stays authoritative)
+let fps = 60;              // smoothed frames/sec, shown in the HUD
 
 // ---------- input ----------
 const keys = {};
@@ -242,6 +245,7 @@ let lastFrame = performance.now();
 function render(now) {
   const dt = Math.min(0.05, (now - lastFrame) / 1000);
   lastFrame = now;
+  if (dt > 0) fps = fps * 0.92 + (1 / dt) * 0.08;
   const Z = CFG.ZOOM;
 
   ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
@@ -409,19 +413,25 @@ function drawShip(sx, sy, angle, color, hp, self, thrust, Z) {
     ctx.closePath(); ctx.fill();
   }
 
-  // hull — metallic gradient (no per-ship shadowBlur: that was the framerate killer)
-  const hg = ctx.createLinearGradient(-12, -11, 16, 11);
-  hg.addColorStop(0, shade(color, -0.4));
-  hg.addColorStop(0.5, color);
-  hg.addColorStop(1, shade(color, 0.55));
-  ctx.fillStyle = hg;
+  // hull — gradient only for your own ship; the crowd uses a flat fill (creating
+  // a gradient per ship per frame was the real framerate killer at 100 ships).
+  if (self) {
+    const hg = ctx.createLinearGradient(-12, -11, 16, 11);
+    hg.addColorStop(0, shade(color, -0.4));
+    hg.addColorStop(0.5, color);
+    hg.addColorStop(1, shade(color, 0.55));
+    ctx.fillStyle = hg;
+  } else {
+    ctx.fillStyle = color;
+  }
   ctx.beginPath();
   ctx.moveTo(18, 0); ctx.lineTo(-12, 11); ctx.lineTo(-6, 0); ctx.lineTo(-12, -11);
   ctx.closePath(); ctx.fill();
   // bright edge + cockpit
-  ctx.strokeStyle = 'rgba(255,255,255,.85)'; ctx.lineWidth = 1.3; ctx.stroke();
-  ctx.fillStyle = 'rgba(220,245,255,.95)';
-  ctx.beginPath(); ctx.arc(3, 0, 2.6, 0, Math.PI * 2); ctx.fill();
+  ctx.strokeStyle = self ? 'rgba(255,255,255,.85)' : 'rgba(255,255,255,.45)';
+  ctx.lineWidth = 1.2; ctx.stroke();
+  ctx.fillStyle = 'rgba(220,245,255,.9)';
+  ctx.beginPath(); ctx.arc(3, 0, 2.4, 0, Math.PI * 2); ctx.fill();
   ctx.restore();
 
   // health pip above non-self ships (screen-space, scaled with zoom)
@@ -468,27 +478,37 @@ function drawMissile(sx, sy, angle, color, Z) {
   ctx.restore();
 }
 
-// soft drifting nebula clouds + base gradient
-let nebulaT = 0;
+// soft drifting nebula — rendered to an offscreen buffer every few frames and
+// then blitted; four full-screen gradient fills *every* frame was wasteful.
+const nebBuf = document.createElement('canvas');
+const nebCtx = nebBuf.getContext('2d');
+let nebulaT = 0, nebCountdown = 0;
 function drawNebula() {
-  nebulaT += 0.0016;
-  const g = ctx.createRadialGradient(
-    innerWidth * 0.5, innerHeight * 0.4, 60,
-    innerWidth * 0.5, innerHeight * 0.5, Math.max(innerWidth, innerHeight));
-  g.addColorStop(0, '#0a1330'); g.addColorStop(1, '#03040a');
-  ctx.fillStyle = g; ctx.fillRect(0, 0, innerWidth, innerHeight);
+  if (nebBuf.width !== innerWidth || nebBuf.height !== innerHeight) {
+    nebBuf.width = innerWidth; nebBuf.height = innerHeight; nebCountdown = 0;
+  }
+  if (nebCountdown-- <= 0) {
+    nebCountdown = 6;
+    nebulaT += 0.01;
+    const g = nebCtx.createRadialGradient(
+      innerWidth * 0.5, innerHeight * 0.4, 60,
+      innerWidth * 0.5, innerHeight * 0.5, Math.max(innerWidth, innerHeight));
+    g.addColorStop(0, '#0a1330'); g.addColorStop(1, '#03040a');
+    nebCtx.fillStyle = g; nebCtx.fillRect(0, 0, innerWidth, innerHeight);
 
-  const blobs = [['#3a1d6e', 0.18], ['#0d4a6b', 0.16], ['#5a1d4e', 0.14]];
-  ctx.globalCompositeOperation = 'lighter';
-  blobs.forEach(([c, a], i) => {
-    const px = innerWidth * (0.3 + 0.4 * Math.sin(nebulaT + i * 2.1));
-    const py = innerHeight * (0.35 + 0.3 * Math.cos(nebulaT * 0.8 + i));
-    const r = Math.max(innerWidth, innerHeight) * 0.45;
-    const rg = ctx.createRadialGradient(px, py, 0, px, py, r);
-    rg.addColorStop(0, hexA(c, a)); rg.addColorStop(1, hexA(c, 0));
-    ctx.fillStyle = rg; ctx.fillRect(0, 0, innerWidth, innerHeight);
-  });
-  ctx.globalCompositeOperation = 'source-over';
+    const blobs = [['#3a1d6e', 0.18], ['#0d4a6b', 0.16], ['#5a1d4e', 0.14]];
+    nebCtx.globalCompositeOperation = 'lighter';
+    blobs.forEach(([c, a], i) => {
+      const px = innerWidth * (0.3 + 0.4 * Math.sin(nebulaT + i * 2.1));
+      const py = innerHeight * (0.35 + 0.3 * Math.cos(nebulaT * 0.8 + i));
+      const r = Math.max(innerWidth, innerHeight) * 0.45;
+      const rg = nebCtx.createRadialGradient(px, py, 0, px, py, r);
+      rg.addColorStop(0, hexA(c, a)); rg.addColorStop(1, hexA(c, 0));
+      nebCtx.fillStyle = rg; nebCtx.fillRect(0, 0, innerWidth, innerHeight);
+    });
+    nebCtx.globalCompositeOperation = 'source-over';
+  }
+  ctx.drawImage(nebBuf, 0, 0);
 }
 function hexA(hex, a) {
   const n = parseInt(hex.slice(1), 16);
@@ -512,13 +532,15 @@ function drawGrid(camX, camY, cx, cy, Z) {
   ctx.stroke();
 }
 
-// vignette to focus the eye on the action
+// vignette — the gradient is static, so build it once per resize and reuse it
 function drawVignette() {
-  const g = ctx.createRadialGradient(
-    innerWidth / 2, innerHeight / 2, innerHeight * 0.45,
-    innerWidth / 2, innerHeight / 2, innerHeight * 0.95);
-  g.addColorStop(0, 'rgba(0,0,0,0)'); g.addColorStop(1, 'rgba(0,0,0,.55)');
-  ctx.fillStyle = g; ctx.fillRect(0, 0, innerWidth, innerHeight);
+  if (!vign) {
+    vign = ctx.createRadialGradient(
+      innerWidth / 2, innerHeight / 2, innerHeight * 0.45,
+      innerWidth / 2, innerHeight / 2, innerHeight * 0.95);
+    vign.addColorStop(0, 'rgba(0,0,0,0)'); vign.addColorStop(1, 'rgba(0,0,0,.55)');
+  }
+  ctx.fillStyle = vign; ctx.fillRect(0, 0, innerWidth, innerHeight);
 }
 
 // crosshair + missile reload indicator at the mouse
@@ -573,7 +595,8 @@ function drawHUD() {
   document.getElementById('stats').innerHTML =
     `<b>${esc(myName)}</b> &nbsp; Score <b>${score}</b><br>` +
     `Kills ${kills} · Deaths ${deaths}<br>` +
-    `Room <b>${myRoom ?? '–'}</b> · Alive <b>${aliveCount}</b> / ${playerCount}`;
+    `Room <b>${myRoom ?? '–'}</b> · Alive <b>${aliveCount}</b> / ${playerCount}<br>` +
+    `<span style="opacity:.55">${Math.round(fps)} fps</span>`;
   document.getElementById('hpfill').style.width = Math.max(0, me.hp) + '%';
 
   let rows = '';

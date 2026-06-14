@@ -150,41 +150,56 @@ export class GameRoom {
 
   broadcast() {
     const now = Date.now();
+    if (this.clients.size === 0) return;
     const board = this.leaderboard();
-    const totalAlive = [...this.game.ships.values()].filter(s => s.alive).length;
 
+    let totalAlive = 0;
     const allShips = [];
     for (const s of this.game.ships.values()) {
+      if (s.alive) totalAlive++;
       allShips.push([s.id, Math.round(s.x), Math.round(s.y), +s.angle.toFixed(2),
         s.alive ? 1 : 0, Math.max(0, Math.round(s.hp)), s.isBot ? 1 : 0]);
     }
     const killFeed = this.game.events.filter(e => e.t === 'kill')
       .map(e => ({ k: e.killer, v: e.victim }));
 
+    // Serialize the parts identical for every client ONCE, then build each
+    // client's message by string concat. This turns the 100×100 roster
+    // serialization into 100×1 — the key fix for mass-multiplayer load on the
+    // single-threaded Durable Object.
+    const shipsJson = JSON.stringify(allShips);
+    const boardJson = JSON.stringify(board);
+    const killsJson = JSON.stringify(killFeed);
+    const players = this.game.ships.size;
+    const room = this.roomId;
+    const events = this.game.events;
+    const projectiles = this.game.bullets;
+
     for (const [ws, id] of this.clients) {
       const me = this.game.ships.get(id);
       if (!me) continue;
+      const mx = me.x, my = me.y;
       const bullets = [];
-      for (const b of this.game.bullets) {
-        if (Math.abs(b.x - me.x) < VIEW_RADIUS && Math.abs(b.y - me.y) < VIEW_RADIUS) {
+      for (const b of projectiles) {
+        if (Math.abs(b.x - mx) < VIEW_RADIUS && Math.abs(b.y - my) < VIEW_RADIUS)
           bullets.push([Math.round(b.x), Math.round(b.y), b.color, +Math.atan2(b.vy, b.vx).toFixed(2)]);
-        }
       }
-      const fx = this.game.events.filter(e =>
-        e.t !== 'kill' &&
-        Math.abs(e.x - me.x) < VIEW_RADIUS && Math.abs(e.y - me.y) < VIEW_RADIUS)
-        .map(e => [Math.round(e.x), Math.round(e.y), e.t]);
-
-      try {
-        ws.send(JSON.stringify({
-          t: 'snap', now,
-          me: { x: me.x, y: me.y, vx: me.vx, vy: me.vy, hp: me.hp, seq: me.lastSeq,
-            alive: me.alive, score: me.score, kills: me.kills, deaths: me.deaths,
-            respawnIn: me.alive ? 0 : Math.max(0, me.respawnAt - now) },
-          ships: allShips, bullets, fx, kills: killFeed, board,
-          alive: totalAlive, players: this.game.ships.size, room: this.roomId,
-        }));
-      } catch { /* socket closing */ }
+      const fx = [];
+      for (const e of events) {
+        if (e.t !== 'kill' && Math.abs(e.x - mx) < VIEW_RADIUS && Math.abs(e.y - my) < VIEW_RADIUS)
+          fx.push([Math.round(e.x), Math.round(e.y), e.t]);
+      }
+      const meJson = JSON.stringify({
+        x: me.x, y: me.y, vx: me.vx, vy: me.vy, hp: me.hp, seq: me.lastSeq,
+        alive: me.alive, score: me.score, kills: me.kills, deaths: me.deaths,
+        respawnIn: me.alive ? 0 : Math.max(0, me.respawnAt - now),
+      });
+      const msg = '{"t":"snap","now":' + now + ',"me":' + meJson +
+        ',"ships":' + shipsJson + ',"bullets":' + JSON.stringify(bullets) +
+        ',"fx":' + JSON.stringify(fx) + ',"kills":' + killsJson +
+        ',"board":' + boardJson + ',"alive":' + totalAlive +
+        ',"players":' + players + ',"room":' + room + '}';
+      try { ws.send(msg); } catch { /* socket closing */ }
     }
   }
 }
