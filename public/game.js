@@ -1,13 +1,15 @@
 /* Nova 100 client — rendering, input, prediction, interpolation.
-   Physics constants MUST match server/constants.js for prediction to be smooth. */
+   Physics constants MUST match shared/constants.js for prediction to be smooth. */
 'use strict';
 
 const CFG = {
   TICK_RATE: 30, DT: 1 / 30,
-  ACCEL: 900, MAX_SPEED: 520, FRICTION: 0.92,
+  ACCEL: 1000, MAX_SPEED: 560, FRICTION: 0.94,
   SHIP_RADIUS: 16, WORLD: { w: 6000, h: 6000 },
   INPUT_RATE: 30,           // input packets / sec
   INTERP_DELAY: 100,        // ms we render other ships in the past
+  ZOOM: 0.72,               // camera zoom-out (<1 shows more of the arena)
+  FIRE_COOLDOWN_MS: 800,    // mirrors server; drives muzzle flash + reload reticle
 };
 
 // ---------- canvas ----------
@@ -35,6 +37,7 @@ const stars = STAR_LAYERS.map(L => {
 
 // ---------- game state ----------
 let ws = null, myId = 0;
+let myName = 'Pilot';
 const me = { x: CFG.WORLD.w / 2, y: CFG.WORLD.h / 2, vx: 0, vy: 0, hp: 100, alive: true };
 let serverMe = null;
 let score = 0, kills = 0, deaths = 0, respawnIn = 0, aliveCount = 0, playerCount = 0;
@@ -42,14 +45,18 @@ let score = 0, kills = 0, deaths = 0, respawnIn = 0, aliveCount = 0, playerCount
 // other ships interpolation buffers: id -> { prev:{t,...}, cur:{t,...} }
 const ships = new Map();
 let board = [];
-let bullets = [];          // current view bullets [x,y,color]
+let bullets = [];          // current view missiles: [x, y, color, angle]
 const fxList = [];         // local particle effects
+const rings = [];          // expanding shockwaves: {x,y,color,r0,r1,t,max}
 let shake = 0;             // screen-shake magnitude (decays each frame)
+let flash = 0;             // brief screen flash on very close kills
+let muzzle = 0;            // muzzle-flash decay for own ship
+let lastFireT = -1e9;      // client fire cadence (cosmetic; server stays authoritative)
 
 // ---------- input ----------
 const keys = {};
 let mouse = { x: innerWidth / 2, y: innerHeight / 2, down: false };
-const inputHistory = [];   // {seq, mx, my, dt} pending acknowledgement
+const inputHistory = [];   // {seq, mx, my} pending acknowledgement
 let inputSeq = 0;
 
 addEventListener('keydown', e => {
@@ -73,7 +80,7 @@ function inputVector() {
   return { mx, my };
 }
 function aimAngle() {
-  // mouse position relative to screen centre → world angle
+  // mouse position relative to screen centre → world angle (zoom is uniform, so unchanged)
   return Math.atan2(mouse.y - innerHeight / 2, mouse.x - innerWidth / 2);
 }
 function shooting() { return mouse.down || keys['Space']; }
@@ -108,6 +115,7 @@ function onMessage(msg) {
     joined = true;
     CFG.WORLD = msg.world;
     document.getElementById('start').style.display = 'none';
+    cv.style.cursor = 'none';      // we draw our own reticle while playing
     startInputLoop();
   } else if (msg.t === 'full') {
     // room filled between assignment and join — grab another one
@@ -123,8 +131,8 @@ function applySnapshot(s) {
   const m = s.me;
   score = m.score; kills = m.kills; deaths = m.deaths;
   respawnIn = m.respawnIn;
-  if (m.hp < me.hp - 0.5) shake = Math.min(18, shake + (me.hp - m.hp) * 0.4); // hit feedback
-  if (me.alive && !m.alive) shake = 26;                                       // death kick
+  if (m.hp < me.hp - 0.5) shake = Math.min(22, shake + (me.hp - m.hp) * 0.45); // hit feedback
+  if (me.alive && !m.alive) shake = 30;                                        // death kick
   me.hp = m.hp; me.alive = m.alive;
 
   // --- reconcile own ship: snap to server, replay unacked inputs ---
@@ -148,7 +156,18 @@ function applySnapshot(s) {
   for (const id of ships.keys()) if (!seen.has(id)) ships.delete(id);
 
   bullets = s.bullets;
-  for (const [x, y, t] of s.fx) spawnFx(x, y, t);
+  for (const ev of s.fx) {
+    const [x, y, t] = ev;
+    spawnFx(x, y, t);
+    if (t === 'kill') {
+      spawnRing(x, y, '#ffd08a', 10, 150, 0.55);
+      spawnRing(x, y, '#ff7b4a', 4, 90, 0.4);
+      const d = Math.hypot(x - me.x, y - me.y);
+      if (d < 520) flash = Math.min(0.5, flash + (1 - d / 520) * 0.45);
+    } else {
+      spawnRing(x, y, '#bfe9ff', 2, 26, 0.28);
+    }
+  }
   for (const k of s.kills) addFeed(k.k, k.v);
 }
 
@@ -177,6 +196,12 @@ function startInputLoop() {
       stepLocal(me, mx, my);                       // client-side prediction
       inputHistory.push({ seq: inputSeq, mx, my });
       if (inputHistory.length > 120) inputHistory.shift();
+      // cosmetic launch feedback when our cooldown is up
+      const t = performance.now();
+      if (shoot && t - lastFireT >= CFG.FIRE_COOLDOWN_MS) {
+        lastFireT = t; muzzle = 1;
+        shake = Math.min(20, shake + 5);            // recoil kick
+      }
     }
     ws.send(JSON.stringify({ t: 'input', seq: inputSeq, mx, my, aim, shoot }));
   }, 1000 / CFG.INPUT_RATE);
@@ -184,14 +209,23 @@ function startInputLoop() {
 
 // ---------- effects ----------
 function spawnFx(x, y, type) {
-  const n = type === 'kill' ? 26 : 6;
+  const kill = type === 'kill';
+  const n = kill ? 30 : 8;
   for (let i = 0; i < n; i++) {
     const a = Math.random() * Math.PI * 2;
-    const sp = (type === 'kill' ? 120 : 60) * (0.4 + Math.random());
-    fxList.push({ x, y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp,
-      life: 1, max: type === 'kill' ? 0.8 : 0.4,
-      color: type === 'kill' ? '#ffae3b' : '#9fe8ff', r: type === 'kill' ? 3 : 2 });
+    const sp = (kill ? 150 : 80) * (0.35 + Math.random());
+    fxList.push({
+      x, y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp,
+      life: 1, max: kill ? 0.6 + Math.random() * 0.5 : 0.35,
+      color: kill ? (Math.random() < 0.5 ? '#ffd166' : '#ff7b4a') : '#bfe9ff',
+      r: kill ? 2 + Math.random() * 2.5 : 1.6,
+    });
   }
+  if (fxList.length > 500) fxList.splice(0, fxList.length - 500);   // soft cap
+}
+function spawnRing(x, y, color, r0, r1, max) {
+  rings.push({ x, y, color, r0, r1, t: 0, max });
+  if (rings.length > 60) rings.shift();
 }
 function addFeed(k, v) {
   const f = document.getElementById('feed');
@@ -208,30 +242,33 @@ let lastFrame = performance.now();
 function render(now) {
   const dt = Math.min(0.05, (now - lastFrame) / 1000);
   lastFrame = now;
+  const Z = CFG.ZOOM;
 
   ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
   ctx.clearRect(0, 0, innerWidth, innerHeight);
 
-  // screen shake
+  // decay transient feedback
   shake *= 0.86; if (shake < 0.3) shake = 0;
+  muzzle *= 0.7; if (muzzle < 0.02) muzzle = 0;
+  flash *= 0.88; if (flash < 0.02) flash = 0;
   const shX = (Math.random() - 0.5) * shake, shY = (Math.random() - 0.5) * shake;
 
   const camX = me.x, camY = me.y;
   const cx = innerWidth / 2 + shX, cy = innerHeight / 2 + shY;
-  const w2s = (wx, wy) => [wx - camX + cx, wy - camY + cy];
+  const w2s = (wx, wy) => [(wx - camX) * Z + cx, (wy - camY) * Z + cy];
 
   drawNebula();
   drawStars(camX, camY);
-  drawGrid(camX, camY, cx, cy);
+  drawGrid(camX, camY, cx, cy, Z);
   drawBounds(w2s);
 
-  // bullets
-  for (const [bx, by, color] of bullets) {
+  // missiles (few, so we can afford oriented bodies + glowing trails)
+  for (const b of bullets) {
+    const [bx, by, color, ang] = b;
     const [sx, sy] = w2s(bx, by);
-    ctx.fillStyle = color; ctx.shadowColor = color; ctx.shadowBlur = 8;
-    ctx.beginPath(); ctx.arc(sx, sy, 3, 0, Math.PI * 2); ctx.fill();
+    if (sx < -60 || sy < -60 || sx > innerWidth + 60 || sy > innerHeight + 60) continue;
+    drawMissile(sx, sy, ang || 0, color, Z);
   }
-  ctx.shadowBlur = 0;
 
   // other ships (interpolated)
   const renderTime = now - CFG.INTERP_DELAY;
@@ -239,31 +276,50 @@ function render(now) {
     const p = interp(e, renderTime);
     if (!p.alive) continue;
     const [sx, sy] = w2s(p.x, p.y);
-    if (sx < -40 || sy < -40 || sx > innerWidth + 40 || sy > innerHeight + 40) continue;
+    if (sx < -50 || sy < -50 || sx > innerWidth + 50 || sy > innerHeight + 50) continue;
     const moving = Math.hypot(e.cur.x - e.prev.x, e.cur.y - e.prev.y) > 1.5;
-    drawShip(sx, sy, p.angle, p.bot ? '#9fb3c8' : '#ff6b6b', p.hp, false, moving);
+    drawShip(sx, sy, p.angle, p.bot ? '#9fb3c8' : '#ff6b6b', p.hp, false, moving, Z);
   }
 
   // self (predicted)
   if (me.alive) {
     const { mx, my } = inputVector();
-    drawShip(cx, cy, aimAngle(), '#5ad1ff', me.hp, true, (mx || my) !== 0);
+    drawShip(cx, cy, aimAngle(), '#5ad1ff', me.hp, true, (mx || my) !== 0, Z);
   }
 
-  // effects
+  // particles
   for (let i = fxList.length - 1; i >= 0; i--) {
     const f = fxList[i];
     f.life -= dt / f.max;
     if (f.life <= 0) { fxList.splice(i, 1); continue; }
-    f.x += f.vx * dt; f.y += f.vy * dt;
+    f.x += f.vx * dt; f.y += f.vy * dt; f.vx *= 0.96; f.vy *= 0.96;
     const [sx, sy] = w2s(f.x, f.y);
     ctx.globalAlpha = Math.max(0, f.life);
     ctx.fillStyle = f.color;
-    ctx.beginPath(); ctx.arc(sx, sy, f.r, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(sx, sy, f.r * Z, 0, Math.PI * 2); ctx.fill();
   }
   ctx.globalAlpha = 1;
 
+  // shockwave rings (additive)
+  ctx.globalCompositeOperation = 'lighter';
+  for (let i = rings.length - 1; i >= 0; i--) {
+    const r = rings[i];
+    r.t += dt / r.max;
+    if (r.t >= 1) { rings.splice(i, 1); continue; }
+    const e = 1 - (1 - r.t) * (1 - r.t);             // ease-out
+    const rad = (r.r0 + (r.r1 - r.r0) * e) * Z;
+    const [sx, sy] = w2s(r.x, r.y);
+    ctx.globalAlpha = (1 - r.t) * 0.8;
+    ctx.strokeStyle = r.color;
+    ctx.lineWidth = (1 + (1 - r.t) * 2.5) * Z;
+    ctx.beginPath(); ctx.arc(sx, sy, rad, 0, Math.PI * 2); ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+  ctx.globalCompositeOperation = 'source-over';
+
   drawVignette();
+  if (flash > 0) { ctx.fillStyle = `rgba(255,240,210,${flash})`; ctx.fillRect(0, 0, innerWidth, innerHeight); }
+  if (joined && me.alive) drawReticle(now);
   drawMinimap();
   drawHUD();
   requestAnimationFrame(render);
@@ -317,40 +373,99 @@ function drawBounds(w2s) {
   ctx.shadowBlur = 0;
 }
 
-function drawShip(sx, sy, angle, color, hp, self, thrust) {
+// lighten (amt>0 toward white) or darken (amt<0 toward black) a #rrggbb colour
+function shade(hex, amt) {
+  const n = parseInt(hex.slice(1), 16);
+  let r = n >> 16 & 255, g = n >> 8 & 255, b = n & 255;
+  if (amt >= 0) { r += (255 - r) * amt; g += (255 - g) * amt; b += (255 - b) * amt; }
+  else { r *= 1 + amt; g *= 1 + amt; b *= 1 + amt; }
+  return `rgb(${r | 0},${g | 0},${b | 0})`;
+}
+
+function drawShip(sx, sy, angle, color, hp, self, thrust, Z) {
   ctx.save();
   ctx.translate(sx, sy);
-  ctx.rotate(angle);
 
-  // engine flame (flickers) behind the hull when thrusting
+  // soft glow under self only — one gradient, cheap, reads clearly in the crowd
+  if (self) {
+    const gr = ctx.createRadialGradient(0, 0, 0, 0, 0, 34 * Z);
+    gr.addColorStop(0, hexA(color, 0.32));
+    gr.addColorStop(1, hexA(color, 0));
+    ctx.fillStyle = gr;
+    ctx.beginPath(); ctx.arc(0, 0, 34 * Z, 0, Math.PI * 2); ctx.fill();
+  }
+
+  ctx.rotate(angle);
+  ctx.scale(Z, Z);
+
+  // engine flame when thrusting
   if (thrust) {
     const len = 12 + Math.random() * 10;
     const g = ctx.createLinearGradient(-6, 0, -6 - len, 0);
     g.addColorStop(0, '#fff'); g.addColorStop(0.4, '#ffd166'); g.addColorStop(1, 'rgba(255,107,43,0)');
     ctx.fillStyle = g;
     ctx.beginPath();
-    ctx.moveTo(-6, 6); ctx.lineTo(-6 - len, 0); ctx.lineTo(-6, -6);
+    ctx.moveTo(-6, 5); ctx.lineTo(-6 - len, 0); ctx.lineTo(-6, -5);
     ctx.closePath(); ctx.fill();
   }
 
-  // hull with glow
-  ctx.fillStyle = color; ctx.shadowColor = color; ctx.shadowBlur = self ? 16 : 9;
+  // hull — metallic gradient (no per-ship shadowBlur: that was the framerate killer)
+  const hg = ctx.createLinearGradient(-12, -11, 16, 11);
+  hg.addColorStop(0, shade(color, -0.4));
+  hg.addColorStop(0.5, color);
+  hg.addColorStop(1, shade(color, 0.55));
+  ctx.fillStyle = hg;
   ctx.beginPath();
   ctx.moveTo(18, 0); ctx.lineTo(-12, 11); ctx.lineTo(-6, 0); ctx.lineTo(-12, -11);
   ctx.closePath(); ctx.fill();
-  // bright outline + cockpit
-  ctx.shadowBlur = 0;
-  ctx.strokeStyle = 'rgba(255,255,255,.85)'; ctx.lineWidth = 1.4; ctx.stroke();
-  ctx.fillStyle = 'rgba(255,255,255,.9)';
-  ctx.beginPath(); ctx.arc(4, 0, 3, 0, Math.PI * 2); ctx.fill();
+  // bright edge + cockpit
+  ctx.strokeStyle = 'rgba(255,255,255,.85)'; ctx.lineWidth = 1.3; ctx.stroke();
+  ctx.fillStyle = 'rgba(220,245,255,.95)';
+  ctx.beginPath(); ctx.arc(3, 0, 2.6, 0, Math.PI * 2); ctx.fill();
   ctx.restore();
 
-  // health pip above non-self ships
+  // health pip above non-self ships (screen-space, scaled with zoom)
   if (!self && hp < 100) {
-    ctx.fillStyle = 'rgba(0,0,0,.5)'; ctx.fillRect(sx - 16, sy - 26, 32, 4);
+    const w = 30 * Z, yo = 24 * Z;
+    ctx.fillStyle = 'rgba(0,0,0,.5)'; ctx.fillRect(sx - w / 2, sy - yo, w, 3.5);
     ctx.fillStyle = hp > 50 ? '#06d6a0' : hp > 25 ? '#ffd166' : '#ff6b6b';
-    ctx.fillRect(sx - 16, sy - 26, 32 * hp / 100, 4);
+    ctx.fillRect(sx - w / 2, sy - yo, w * hp / 100, 3.5);
   }
+}
+
+// a deliberate, glowing missile with fins and an exhaust trail
+function drawMissile(sx, sy, angle, color, Z) {
+  ctx.save();
+  ctx.translate(sx, sy);
+  ctx.rotate(angle);
+  ctx.scale(Z, Z);
+
+  // exhaust trail (additive)
+  ctx.globalCompositeOperation = 'lighter';
+  const tg = ctx.createLinearGradient(-4, 0, -42, 0);
+  tg.addColorStop(0, hexA(color, 0.85));
+  tg.addColorStop(0.5, hexA(color, 0.22));
+  tg.addColorStop(1, hexA(color, 0));
+  ctx.fillStyle = tg;
+  ctx.beginPath();
+  ctx.moveTo(-2, 3.6); ctx.lineTo(-42, 0); ctx.lineTo(-2, -3.6); ctx.closePath(); ctx.fill();
+  ctx.globalCompositeOperation = 'source-over';
+
+  // fins
+  ctx.fillStyle = color;
+  ctx.beginPath(); ctx.moveTo(-5, 3); ctx.lineTo(-9, 6); ctx.lineTo(-3, 3); ctx.closePath(); ctx.fill();
+  ctx.beginPath(); ctx.moveTo(-5, -3); ctx.lineTo(-9, -6); ctx.lineTo(-3, -3); ctx.closePath(); ctx.fill();
+
+  // body
+  ctx.fillStyle = '#e9f4ff';
+  ctx.beginPath();
+  ctx.moveTo(10, 0); ctx.lineTo(3, 4.5); ctx.lineTo(-7, 3); ctx.lineTo(-7, -3); ctx.lineTo(3, -4.5);
+  ctx.closePath(); ctx.fill();
+
+  // hot warhead tip
+  ctx.fillStyle = '#fff';
+  ctx.beginPath(); ctx.arc(7, 0, 2, 0, Math.PI * 2); ctx.fill();
+  ctx.restore();
 }
 
 // soft drifting nebula clouds + base gradient
@@ -380,15 +495,20 @@ function hexA(hex, a) {
   return `rgba(${n >> 16 & 255},${n >> 8 & 255},${n & 255},${a})`;
 }
 
-// faint world-space grid for motion/depth cues
-function drawGrid(camX, camY, cx, cy) {
-  const step = 200;
+// faint world-space grid for motion/depth cues (zoom-aware)
+function drawGrid(camX, camY, cx, cy, Z) {
+  const step = 300;
   ctx.strokeStyle = 'rgba(90,209,255,.05)'; ctx.lineWidth = 1;
   ctx.beginPath();
-  const startX = -((camX - cx) % step);
-  for (let x = startX; x < innerWidth; x += step) { ctx.moveTo(x, 0); ctx.lineTo(x, innerHeight); }
-  const startY = -((camY - cy) % step);
-  for (let y = startY; y < innerHeight; y += step) { ctx.moveTo(0, y); ctx.lineTo(innerWidth, y); }
+  const halfW = innerWidth / 2 / Z, halfH = innerHeight / 2 / Z;
+  for (let wx = Math.floor((camX - halfW) / step) * step; wx <= camX + halfW; wx += step) {
+    const sx = (wx - camX) * Z + cx;
+    ctx.moveTo(sx, 0); ctx.lineTo(sx, innerHeight);
+  }
+  for (let wy = Math.floor((camY - halfH) / step) * step; wy <= camY + halfH; wy += step) {
+    const sy = (wy - camY) * Z + cy;
+    ctx.moveTo(0, sy); ctx.lineTo(innerWidth, sy);
+  }
   ctx.stroke();
 }
 
@@ -399,6 +519,36 @@ function drawVignette() {
     innerWidth / 2, innerHeight / 2, innerHeight * 0.95);
   g.addColorStop(0, 'rgba(0,0,0,0)'); g.addColorStop(1, 'rgba(0,0,0,.55)');
   ctx.fillStyle = g; ctx.fillRect(0, 0, innerWidth, innerHeight);
+}
+
+// crosshair + missile reload indicator at the mouse
+function drawReticle(now) {
+  const prog = Math.min(1, (now - lastFireT) / CFG.FIRE_COOLDOWN_MS);
+  const x = mouse.x, y = mouse.y, R = 15;
+  ctx.save();
+  ctx.lineWidth = 2;
+  ctx.strokeStyle = 'rgba(255,255,255,.18)';
+  ctx.beginPath(); ctx.arc(x, y, R, 0, Math.PI * 2); ctx.stroke();
+  if (prog < 1) {
+    // reloading: an arc that sweeps to full
+    ctx.strokeStyle = 'rgba(255,160,90,.95)';
+    ctx.beginPath(); ctx.arc(x, y, R, -Math.PI / 2, -Math.PI / 2 + prog * Math.PI * 2); ctx.stroke();
+  } else {
+    // armed
+    ctx.strokeStyle = 'rgba(90,209,255,.95)';
+    ctx.beginPath(); ctx.arc(x, y, R, 0, Math.PI * 2); ctx.stroke();
+    ctx.fillStyle = 'rgba(90,209,255,.9)';
+    ctx.beginPath(); ctx.arc(x, y, 1.8, 0, Math.PI * 2); ctx.fill();
+  }
+  // tiny tick marks
+  ctx.strokeStyle = 'rgba(255,255,255,.4)';
+  for (const a of [0, Math.PI / 2, Math.PI, -Math.PI / 2]) {
+    ctx.beginPath();
+    ctx.moveTo(x + Math.cos(a) * (R + 3), y + Math.sin(a) * (R + 3));
+    ctx.lineTo(x + Math.cos(a) * (R + 7), y + Math.sin(a) * (R + 7));
+    ctx.stroke();
+  }
+  ctx.restore();
 }
 
 function drawMinimap() {
@@ -441,7 +591,6 @@ function drawHUD() {
 }
 
 // ---------- boot ----------
-let myName = 'Pilot';
 function setStatus(s) { document.getElementById('status').textContent = s; }
 function launch() {
   myName = (document.getElementById('name').value || 'Pilot').slice(0, 16);

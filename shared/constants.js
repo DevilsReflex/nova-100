@@ -7,23 +7,24 @@ export const DT = 1 / TICK_RATE;
 export const WORLD = { w: 6000, h: 6000 };
 export const MAX_PLAYERS = 100;         // humans + bots combined
 
-// Ship physics
+// Ship physics — tuned for fluid, momentum-y flight
 export const SHIP_RADIUS = 16;
-export const ACCEL = 900;               // px/s^2
-export const MAX_SPEED = 520;           // px/s
-export const FRICTION = 0.92;           // velocity retained per tick
+export const ACCEL = 1000;              // px/s^2 (snappier response)
+export const MAX_SPEED = 560;           // px/s
+export const FRICTION = 0.94;           // velocity retained per tick (more glide)
 export const SHIP_MAX_HP = 100;
 export const RESPAWN_MS = 2500;
 
-// Weapons
-export const BULLET_SPEED = 900;        // px/s
-export const BULLET_TTL = 1.1;          // seconds
-export const BULLET_RADIUS = 4;
-export const BULLET_DAMAGE = 18;
-export const FIRE_COOLDOWN_MS = 160;
+// Weapons — deliberate, high-impact missiles (not a rapid-fire machine gun).
+// The long cooldown is also what keeps the projectile count (and the lag) low.
+export const BULLET_SPEED = 850;        // px/s
+export const BULLET_TTL = 1.6;          // seconds → ~1360px range
+export const BULLET_RADIUS = 8;         // bigger projectile / hit area
+export const BULLET_DAMAGE = 50;        // two missiles down a full-HP ship
+export const FIRE_COOLDOWN_MS = 800;    // ~1.25 launches/sec — one deliberate shot
 
 // Networking / interest management
-export const VIEW_RADIUS = 1300;        // detailed entities sent within this range
+export const VIEW_RADIUS = 1500;        // detailed entities sent within range (wider for zoom-out)
 
 // Bots
 export const BOT_COUNT_TARGET = 100;    // top up arena to this many total ships

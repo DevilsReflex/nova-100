@@ -187,7 +187,7 @@ setInterval(() => {
       const bullets = [];
       for (const b of game.bullets) {
         if (Math.abs(b.x - me.x) < VIEW_RADIUS && Math.abs(b.y - me.y) < VIEW_RADIUS)
-          bullets.push([Math.round(b.x), Math.round(b.y), b.color]);
+          bullets.push([Math.round(b.x), Math.round(b.y), b.color, +Math.atan2(b.vy, b.vx).toFixed(2)]);
       }
       const fx = game.events.filter(e => e.t !== 'kill' &&
         Math.abs(e.x - me.x) < VIEW_RADIUS && Math.abs(e.y - me.y) < VIEW_RADIUS)
