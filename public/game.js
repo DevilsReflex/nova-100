@@ -450,4 +450,34 @@ function launch() {
 document.getElementById('play').addEventListener('click', launch);
 document.getElementById('name').addEventListener('keydown', e => { if (e.key === 'Enter') launch(); });
 document.getElementById('name').focus();
+
+// ---------- all-time leaderboard (Cloudflare D1) ----------
+async function loadHallOfFame() {
+  const wrap = document.getElementById('halloffame');
+  const rows = document.getElementById('hofRows');
+  if (!wrap || !rows) return;
+  try {
+    const r = await fetch('/leaderboard', { cache: 'no-store' });
+    if (!r.ok) throw new Error('no leaderboard endpoint');
+    const data = await r.json();
+    if (!Array.isArray(data) || data.length === 0) {
+      rows.innerHTML = '<li class="muted">Be the first to make the board</li>';
+      return;
+    }
+    rows.innerHTML = data.map((d, i) =>
+      `<li class="${i === 0 ? 'top1' : ''}">` +
+        `<span class="rank">${i + 1}</span>` +
+        `<span class="nm">${esc(d.name)}</span>` +
+        `<span class="sc">${(d.score | 0).toLocaleString()}</span>` +
+      `</li>`).join('');
+  } catch {
+    wrap.style.display = 'none';   // e.g. the Node dev server has no /leaderboard
+  }
+}
+loadHallOfFame();
+setInterval(() => {
+  const s = document.getElementById('start');
+  if (s && s.style.display !== 'none') loadHallOfFame();
+}, 20000);
+
 requestAnimationFrame(render);

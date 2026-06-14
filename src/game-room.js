@@ -52,6 +52,19 @@ export class GameRoom {
     } catch { /* lobby unavailable; counts self-heal on next beat */ }
   }
 
+  // Persist a human's finished run to the all-time D1 leaderboard. Fire-and-forget
+  // and fully guarded — the live arena must never stall or crash on a DB hiccup.
+  recordScore(ship) {
+    if (!ship || ship.isBot || !this.env.DB) return;
+    const score = Math.max(0, Math.round(ship.score || 0));
+    if (score <= 0) return;                  // skip no-score join/leaves
+    const name = ('' + (ship.name || 'Pilot')).slice(0, 16);
+    const kills = Math.max(0, Math.round(ship.kills || 0));
+    this.env.DB.prepare(
+      'INSERT INTO scores (name, score, kills, created_at) VALUES (?, ?, ?, ?)'
+    ).bind(name, score, kills, Date.now()).run().catch(() => {});
+  }
+
   startLoops() {
     if (this.tickTimer) return;
     this.reconcileBots();
@@ -114,6 +127,7 @@ export class GameRoom {
     const drop = () => {
       const id = this.clients.get(server);
       if (id != null) {
+        this.recordScore(this.game.ships.get(id));   // persist run to D1 (best-effort)
         this.game.removeShip(id);
         this.clients.delete(server);
         this.humanCount = Math.max(0, this.humanCount - 1);

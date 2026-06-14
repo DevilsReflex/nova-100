@@ -21,4 +21,22 @@
     ]
   },
 
-  // SQLite-backed Durable Objects are availab
+  // SQLite-backed Durable Objects are available on the Workers free plan, so no
+  // paid plan is required. This migration registers both DO classes as SQLite.
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["GameRoom", "Lobby"] }
+  ],
+
+  // D1: the persistent all-time Top 100 leaderboard. Scores survive matches,
+  // restarts, and redeploys (Durable Objects only hold the *live* arena).
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "nova-100-db",
+      "database_id": "5b5567d9-5d0e-419f-be97-cb562ff6c64e"
+    }
+  ],
+
+  // structured logs in the Cloudflare dashboard
+  "observability": { "enabled": true }
+}

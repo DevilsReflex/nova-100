@@ -70,6 +70,19 @@
   #start .controls kbd { background: rgba(255,255,255,.12); border-radius: 4px;
     padding: 1px 6px; font-family: inherit; }
   #status { margin-top: 12px; font-size: 12px; min-height: 16px; color: #ffd166; }
+  #halloffame { margin-top: 22px; text-align: left;
+    border-top: 1px solid rgba(90,209,255,.18); padding-top: 14px; }
+  #halloffame h3 { font-size: 11px; letter-spacing: 2px; text-transform: uppercase;
+    color: var(--accent); text-align: center; margin-bottom: 10px; }
+  #hofRows { list-style: none; max-height: 170px; overflow-y: auto; padding-right: 4px; }
+  #hofRows li { display: flex; justify-content: space-between; gap: 10px;
+    font-size: 13px; padding: 3px 6px; border-radius: 5px; }
+  #hofRows li:nth-child(odd) { background: rgba(255,255,255,.035); }
+  #hofRows li .rank { color: #8aa0c0; width: 24px; flex: none; text-align: right; }
+  #hofRows li .nm { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #hofRows li .sc { color: #ffd166; font-variant-numeric: tabular-nums; }
+  #hofRows li.muted { justify-content: center; color: #6b7a90; }
+  #hofRows li.top1 .nm { color: #ffd166; font-weight: 700; }
 </style>
 </head>
 <body>
@@ -98,6 +111,10 @@
       <div class="controls">
         <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> thrust &nbsp;·&nbsp;
         <kbd>Mouse</kbd> aim &nbsp;·&nbsp; <kbd>Click</kbd>/<kbd>Space</kbd> fire
+      </div>
+      <div id="halloffame">
+        <h3>★ All-Time Top 100</h3>
+        <ol id="hofRows"><li class="muted">Loading…</li></ol>
       </div>
     </div>
   </div>

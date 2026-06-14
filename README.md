@@ -3,7 +3,14 @@
 A real-time, authoritative-server free-for-all space shooter. Up to **100 ships**
 fight in one arena; the server simulates everything and bots top the arena up to
 100 so it always feels full. Built to run locally on Node and to deploy on
-**Cloudflare Workers + Durable Objects**.
+**Cloudflare Workers + Durable Objects + D1**.
+
+**▶ Play live: https://nova-100.marsadair.workers.dev**
+
+Each live arena is a **Durable Object**; the **Lobby** DO matchmakes players into
+rooms; the browser client is served from the same **Worker**; and the persistent
+**all-time Top 100 leaderboard is stored in Cloudflare D1** (it survives matches,
+restarts, and redeploys).
 
 ```
 ┌────────────┐  WebSocket   ┌──────────────────────────────┐
@@ -46,7 +53,7 @@ to Cloudflare automatically whenever you push to `main`.
    ```bash
    git init && git add -A && git commit -m "Nova 100"
    git branch -M main
-   git remote add origin https://github.com/<your-user>/nova-100.git
+   git remote add origin https://github.com/DevilsReflex/nova-100.git
    git push -u origin main
    ```
 
@@ -60,13 +67,13 @@ to Cloudflare automatically whenever you push to `main`.
    → *New repository secret* → name `CLOUDFLARE_API_TOKEN`, paste the token.
 
 4. Push again (or re-run the workflow from the **Actions** tab). It deploys and
-   prints your live URL, e.g. `https://nova-100.<your-subdomain>.workers.dev`.
+   prints your live URL, e.g. `https://nova-100.marsadair.workers.dev`.
 
 ### Option B — one-click button
 
 After your code is on GitHub, click this (edit the URL to your repo):
 
-[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/<your-user>/nova-100)
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/DevilsReflex/nova-100)
 
 It clones the repo to your GitHub and deploys to your Cloudflare in one flow.
 
@@ -83,6 +90,25 @@ Durable Object on your machine).
 
 > Every path needs **your** Cloudflare/GitHub login at least once — that auth step
 > can't be done for you. Everything else (code, CI, config) is already wired up.
+
+## Leaderboard (Cloudflare D1)
+
+The all-time Top 100 is a D1 database (`nova-100-db`). When a human leaves a match
+the `GameRoom` DO writes their run to D1; the Worker serves it at `GET /leaderboard`
+and the start screen renders it. Writes are best-effort — a DB hiccup never stalls
+or crashes the live arena.
+
+`wrangler.jsonc` already points at the author's `nova-100-db`. **To run it on your
+own Cloudflare account**, create your own DB and apply the schema:
+
+```bash
+npx wrangler d1 create nova-100-db        # paste the printed database_id into wrangler.jsonc
+npx wrangler d1 execute nova-100-db --remote --file=schema.sql
+npm run deploy
+```
+
+`schema.sql` seeds a few "house pilots" so the board isn't empty on day one; real
+players overtake them. The Node dev server has no D1 — it just hides the panel.
 
 ## Offline / single-player
 
@@ -102,9 +128,11 @@ public/
   index.html     UI shell, HUD, start screen
   game.js        renderer, input, client-side prediction + interpolation
 src/             Cloudflare deployment
-  worker.js      routes /ws → Durable Object, serves static assets
-  game-room.js   Durable Object: the live arena
-wrangler.jsonc   Cloudflare config (assets + Durable Object binding)
+  worker.js      routes /assign, /ws, /stats, /leaderboard; serves static assets
+  game-room.js   Durable Object: the live arena (writes finished runs to D1)
+  lobby.js       Durable Object: matchmaker across rooms
+schema.sql       D1 table + index for the persistent all-time leaderboard
+wrangler.jsonc   Cloudflare config (assets + Durable Objects + D1 binding)
 ```
 
 ## Networking notes
