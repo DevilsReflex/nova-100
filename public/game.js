@@ -26,6 +26,12 @@ const TYPES = [
 const SHIP_COLORS = ['#5ad1ff', '#ff6b6b', '#ffd166', '#06d6a0', '#c77dff', '#ff9f1c',
   '#4cc9f0', '#f72585', '#90be6d', '#f8961e', '#577590', '#e0aaff'];
 const shipColor = id => SHIP_COLORS[id % SHIP_COLORS.length];
+// precompute per-type derived colours (rock shading + glow) so the per-frame
+// rock/material draw allocates no strings — matters with many rocks on screen
+for (const t of TYPES) {
+  t.dark = shade(t.color, -0.35); t.light = shade(t.color, 0.5);
+  t.halo = hexA(t.color, 0.18); t.glow = hexA(t.color, 0.5);
+}
 
 // ---------- canvas ----------
 const cv = document.getElementById('game');
@@ -249,7 +255,7 @@ function hexA(hex, a) {
 }
 
 // ---------- render ----------
-let lastFrame = performance.now();
+let lastFrame = performance.now(), lastHud = 0;
 function render(now) {
   const dt = Math.min(0.05, (now - lastFrame) / 1000);
   lastFrame = now;
@@ -370,7 +376,7 @@ function render(now) {
     ctx.textAlign = 'left';
   }
   drawMinimap();
-  drawHUD();
+  if (now - lastHud > 100) { drawHUD(); lastHud = now; }   // HUD at ~10Hz — innerHTML/reflow every frame was costly
   requestAnimationFrame(render);
 }
 
@@ -423,7 +429,7 @@ function drawRock(sx, sy, type, radius, hpPct, id, now, Z) {
   // rare materials get a soft halo so they stand out
   if (type >= 5) {
     ctx.globalCompositeOperation = 'lighter';
-    ctx.fillStyle = hexA(t.color, 0.18);
+    ctx.fillStyle = t.halo;
     ctx.beginPath(); ctx.arc(0, 0, radius * Z * 1.5, 0, Math.PI * 2); ctx.fill();
     ctx.globalCompositeOperation = 'source-over';
   }
@@ -438,9 +444,9 @@ function drawRock(sx, sy, type, radius, hpPct, id, now, Z) {
   ctx.closePath();
   ctx.fillStyle = t.color; ctx.fill();
   // darker offset inner blob for a touch of depth
-  ctx.fillStyle = shade(t.color, -0.35);
+  ctx.fillStyle = t.dark;
   ctx.beginPath(); ctx.arc(-radius * 0.18, radius * 0.16, radius * 0.4, 0, Math.PI * 2); ctx.fill();
-  ctx.strokeStyle = shade(t.color, 0.5); ctx.lineWidth = 1.4; ctx.stroke();
+  ctx.strokeStyle = t.light; ctx.lineWidth = 1.4; ctx.stroke();
   // damage darkening as it gets mined down
   if (hpPct < 100) {
     ctx.globalAlpha = (100 - hpPct) / 100 * 0.5;
@@ -458,12 +464,12 @@ function drawRock(sx, sy, type, radius, hpPct, id, now, Z) {
 }
 
 function drawMat(sx, sy, type, Z, phase) {
-  const col = (TYPES[type] || TYPES[0]).color;
+  const mt = TYPES[type] || TYPES[0], col = mt.color;
   const r = 7 * Z * (0.85 + 0.15 * Math.sin(phase * 0.012));
   ctx.save();
   ctx.translate(sx, sy);
   ctx.globalCompositeOperation = 'lighter';
-  ctx.fillStyle = hexA(col, 0.5);
+  ctx.fillStyle = mt.glow;
   ctx.beginPath(); ctx.arc(0, 0, r * 1.7, 0, Math.PI * 2); ctx.fill();
   ctx.globalCompositeOperation = 'source-over';
   ctx.rotate(phase * 0.004);

@@ -22,7 +22,9 @@ export const BULLET_DAMAGE = 50;        // damage dealt to an asteroid per hit
 export const CHARGE_MS = 1000;          // hold this long to launch a shot
 
 // Networking / interest management
-export const VIEW_RADIUS = 1500;        // entities within this range are sent
+export const VIEW_RADIUS = 2500;        // entities within this range are sent — well
+                                        // beyond the zoomed-out view so they load
+                                        // off-screen (no pop-in as you fly)
 
 // Asteroid + material types. Each asteroid is made of one material that bursts
 // out when it's destroyed. Rarer types (lower weight) are worth more.
