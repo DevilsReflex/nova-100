@@ -1,11 +1,10 @@
-// Durable Object: one live FFA arena. Holds the authoritative Game, runs the
+// Durable Object: one live mining arena. Holds the authoritative Game, runs the
 // tick + broadcast loops, and owns every player's WebSocket. Loops start when
 // the first client connects and stop when the last one leaves.
 import { Game } from '../shared/game.js';
 import { thinkBots, botName } from '../shared/bots.js';
 import {
-  TICK_RATE, SNAPSHOT_RATE, WORLD, MAX_PLAYERS, VIEW_RADIUS,
-  BOT_COUNT_TARGET, SHIP_MAX_HP,
+  TICK_RATE, SNAPSHOT_RATE, WORLD, MAX_PLAYERS, VIEW_RADIUS, BOT_COUNT_TARGET,
 } from '../shared/constants.js';
 
 export class GameRoom {
@@ -115,8 +114,7 @@ export class GameRoom {
         this.reconcileBots();
         this.reportLobby();
         server.send(JSON.stringify({
-          t: 'welcome', id: ship.id, world: WORLD, maxHp: SHIP_MAX_HP,
-          tickRate: TICK_RATE, room: this.roomId,
+          t: 'welcome', id: ship.id, world: WORLD, tickRate: TICK_RATE, room: this.roomId,
         }));
       } else if (msg.t === 'input') {
         const id = this.clients.get(server);
@@ -145,7 +143,7 @@ export class GameRoom {
   leaderboard() {
     return [...this.game.ships.values()]
       .sort((a, b) => b.score - a.score).slice(0, 10)
-      .map(s => ({ name: s.name, score: s.score, kills: s.kills, bot: s.isBot }));
+      .map(s => ({ name: s.name, score: s.score, bot: s.isBot }));
   }
 
   broadcast() {
@@ -153,27 +151,21 @@ export class GameRoom {
     if (this.clients.size === 0) return;
     const board = this.leaderboard();
 
-    let totalAlive = 0;
+    // ship roster — everyone gets all ships (minimap + render): [id,x,y,angle,bot]
     const allShips = [];
     for (const s of this.game.ships.values()) {
-      if (s.alive) totalAlive++;
-      allShips.push([s.id, Math.round(s.x), Math.round(s.y), +s.angle.toFixed(2),
-        s.alive ? 1 : 0, Math.max(0, Math.round(s.hp)), s.isBot ? 1 : 0]);
+      allShips.push([s.id, Math.round(s.x), Math.round(s.y), +s.angle.toFixed(2), s.isBot ? 1 : 0]);
     }
-    const killFeed = this.game.events.filter(e => e.t === 'kill')
-      .map(e => ({ k: e.killer, v: e.victim }));
-
-    // Serialize the parts identical for every client ONCE, then build each
-    // client's message by string concat. This turns the 100×100 roster
-    // serialization into 100×1 — the key fix for mass-multiplayer load on the
-    // single-threaded Durable Object.
+    // serialize the parts identical for every client ONCE (roster + board)
     const shipsJson = JSON.stringify(allShips);
     const boardJson = JSON.stringify(board);
-    const killsJson = JSON.stringify(killFeed);
     const players = this.game.ships.size;
+    const rockTotal = this.game.rocks.size;
     const room = this.roomId;
     const events = this.game.events;
     const projectiles = this.game.bullets;
+    const rocks = this.game.rocks;
+    const mats = this.game.mats;
 
     for (const [ws, id] of this.clients) {
       const me = this.game.ships.get(id);
@@ -184,21 +176,31 @@ export class GameRoom {
         if (Math.abs(b.x - mx) < VIEW_RADIUS && Math.abs(b.y - my) < VIEW_RADIUS)
           bullets.push([Math.round(b.x), Math.round(b.y), b.color, Math.round(b.vx), Math.round(b.vy)]);
       }
-      const fx = [];
+      const rk = [];                            // nearby asteroids: [id,x,y,type,radius,hp%,vx,vy]
+      for (const r of rocks.values()) {
+        if (Math.abs(r.x - mx) < VIEW_RADIUS && Math.abs(r.y - my) < VIEW_RADIUS)
+          rk.push([r.id, Math.round(r.x), Math.round(r.y), r.type, Math.round(r.radius),
+            Math.round(r.hp / r.maxHp * 100), Math.round(r.vx), Math.round(r.vy)]);
+      }
+      const ma = [];                            // nearby material drops: [x,y,type,vx,vy]
+      for (const m of mats) {
+        if (Math.abs(m.x - mx) < VIEW_RADIUS && Math.abs(m.y - my) < VIEW_RADIUS)
+          ma.push([Math.round(m.x), Math.round(m.y), m.type, Math.round(m.vx), Math.round(m.vy)]);
+      }
+      const fx = [];                            // events: [x,y,type('hit'|'boom'|'pickup'),mat,size]
       for (const e of events) {
-        if (e.t !== 'kill' && Math.abs(e.x - mx) < VIEW_RADIUS && Math.abs(e.y - my) < VIEW_RADIUS)
-          fx.push([Math.round(e.x), Math.round(e.y), e.t]);
+        if (Math.abs(e.x - mx) < VIEW_RADIUS && Math.abs(e.y - my) < VIEW_RADIUS)
+          fx.push([Math.round(e.x), Math.round(e.y), e.t, e.c ?? 0, e.s ?? 0]);
       }
       const meJson = JSON.stringify({
-        x: me.x, y: me.y, vx: me.vx, vy: me.vy, hp: me.hp, seq: me.lastSeq,
-        alive: me.alive, score: me.score, kills: me.kills, deaths: me.deaths,
-        respawnIn: me.alive ? 0 : Math.max(0, me.respawnAt - now),
+        x: me.x, y: me.y, vx: me.vx, vy: me.vy, seq: me.lastSeq,
+        score: me.score, cargo: me.cargo,
       });
       const msg = '{"t":"snap","now":' + now + ',"me":' + meJson +
         ',"ships":' + shipsJson + ',"bullets":' + JSON.stringify(bullets) +
-        ',"fx":' + JSON.stringify(fx) + ',"kills":' + killsJson +
-        ',"board":' + boardJson + ',"alive":' + totalAlive +
-        ',"players":' + players + ',"room":' + room + '}';
+        ',"rocks":' + JSON.stringify(rk) + ',"mats":' + JSON.stringify(ma) +
+        ',"fx":' + JSON.stringify(fx) + ',"board":' + boardJson +
+        ',"players":' + players + ',"rockTotal":' + rockTotal + ',"room":' + room + '}';
       try { ws.send(msg); } catch { /* socket closing */ }
     }
   }

@@ -9,8 +9,7 @@ import { WebSocketServer } from 'ws';
 import { Game } from '../shared/game.js';
 import { thinkBots, botName } from '../shared/bots.js';
 import {
-  TICK_RATE, SNAPSHOT_RATE, WORLD, MAX_PLAYERS, VIEW_RADIUS,
-  BOT_COUNT_TARGET, SHIP_MAX_HP,
+  TICK_RATE, SNAPSHOT_RATE, WORLD, MAX_PLAYERS, VIEW_RADIUS, BOT_COUNT_TARGET,
 } from '../shared/constants.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -114,8 +113,7 @@ wss.on('connection', (ws, req) => {
       room.humanCount++;
       reconcileBots(room);
       ws.send(JSON.stringify({
-        t: 'welcome', id: ship.id, world: WORLD, maxHp: SHIP_MAX_HP,
-        tickRate: TICK_RATE, room: room.id,
+        t: 'welcome', id: ship.id, world: WORLD, tickRate: TICK_RATE, room: room.id,
       }));
     } else if (msg.t === 'input') {
       const c = clients.get(ws);
@@ -156,7 +154,7 @@ setInterval(() => {
 // ---------- broadcast loop (per room, interest-managed) ----------
 function leaderboard(game) {
   return [...game.ships.values()].sort((a, b) => b.score - a.score).slice(0, 10)
-    .map(s => ({ name: s.name, score: s.score, kills: s.kills, bot: s.isBot }));
+    .map(s => ({ name: s.name, score: s.score, bot: s.isBot }));
 }
 
 setInterval(() => {
@@ -172,20 +170,14 @@ setInterval(() => {
     const room = rooms.get(roomId); if (!room) continue;
     const game = room.game;
     const board = leaderboard(game);
-    let totalAlive = 0;
     const allShips = [];
     for (const s of game.ships.values()) {
-      if (s.alive) totalAlive++;
-      allShips.push([s.id, Math.round(s.x), Math.round(s.y), +s.angle.toFixed(2),
-        s.alive ? 1 : 0, Math.max(0, Math.round(s.hp)), s.isBot ? 1 : 0]);
+      allShips.push([s.id, Math.round(s.x), Math.round(s.y), +s.angle.toFixed(2), s.isBot ? 1 : 0]);
     }
-    const killFeed = game.events.filter(e => e.t === 'kill').map(e => ({ k: e.killer, v: e.victim }));
-
-    // serialize the shared roster/board/killfeed once, not once per client
     const shipsJson = JSON.stringify(allShips);
     const boardJson = JSON.stringify(board);
-    const killsJson = JSON.stringify(killFeed);
     const players = game.ships.size;
+    const rockTotal = game.rocks.size;
 
     for (const ws of sockets) {
       const c = clients.get(ws);
@@ -197,21 +189,31 @@ setInterval(() => {
         if (Math.abs(b.x - mx) < VIEW_RADIUS && Math.abs(b.y - my) < VIEW_RADIUS)
           bullets.push([Math.round(b.x), Math.round(b.y), b.color, Math.round(b.vx), Math.round(b.vy)]);
       }
+      const rk = [];
+      for (const r of game.rocks.values()) {
+        if (Math.abs(r.x - mx) < VIEW_RADIUS && Math.abs(r.y - my) < VIEW_RADIUS)
+          rk.push([r.id, Math.round(r.x), Math.round(r.y), r.type, Math.round(r.radius),
+            Math.round(r.hp / r.maxHp * 100), Math.round(r.vx), Math.round(r.vy)]);
+      }
+      const ma = [];
+      for (const m of game.mats) {
+        if (Math.abs(m.x - mx) < VIEW_RADIUS && Math.abs(m.y - my) < VIEW_RADIUS)
+          ma.push([Math.round(m.x), Math.round(m.y), m.type, Math.round(m.vx), Math.round(m.vy)]);
+      }
       const fx = [];
       for (const e of game.events) {
-        if (e.t !== 'kill' && Math.abs(e.x - mx) < VIEW_RADIUS && Math.abs(e.y - my) < VIEW_RADIUS)
-          fx.push([Math.round(e.x), Math.round(e.y), e.t]);
+        if (Math.abs(e.x - mx) < VIEW_RADIUS && Math.abs(e.y - my) < VIEW_RADIUS)
+          fx.push([Math.round(e.x), Math.round(e.y), e.t, e.c ?? 0, e.s ?? 0]);
       }
       const meJson = JSON.stringify({
-        x: me.x, y: me.y, vx: me.vx, vy: me.vy, hp: me.hp, seq: me.lastSeq,
-        alive: me.alive, score: me.score, kills: me.kills, deaths: me.deaths,
-        respawnIn: me.alive ? 0 : Math.max(0, me.respawnAt - now),
+        x: me.x, y: me.y, vx: me.vx, vy: me.vy, seq: me.lastSeq,
+        score: me.score, cargo: me.cargo,
       });
       ws.send('{"t":"snap","now":' + now + ',"me":' + meJson +
         ',"ships":' + shipsJson + ',"bullets":' + JSON.stringify(bullets) +
-        ',"fx":' + JSON.stringify(fx) + ',"kills":' + killsJson +
-        ',"board":' + boardJson + ',"alive":' + totalAlive +
-        ',"players":' + players + ',"room":' + roomId + '}');
+        ',"rocks":' + JSON.stringify(rk) + ',"mats":' + JSON.stringify(ma) +
+        ',"fx":' + JSON.stringify(fx) + ',"board":' + boardJson +
+        ',"players":' + players + ',"rockTotal":' + rockTotal + ',"room":' + roomId + '}');
     }
   }
 }, 1000 / SNAPSHOT_RATE);

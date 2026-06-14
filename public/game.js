@@ -1,4 +1,4 @@
-/* Nova 100 client — rendering, input, prediction, interpolation.
+/* Nova 100 client — asteroid mining. Rendering, input, prediction, interpolation.
    Physics constants MUST match shared/constants.js for prediction to be smooth. */
 'use strict';
 
@@ -6,55 +6,78 @@ const CFG = {
   TICK_RATE: 30, DT: 1 / 30,
   ACCEL: 1000, MAX_SPEED: 560, FRICTION: 0.94,
   SHIP_RADIUS: 16, WORLD: { w: 6000, h: 6000 },
-  INPUT_RATE: 30,           // input packets / sec
+  INPUT_RATE: 30,
   INTERP_DELAY: 100,        // ms we render other ships in the past
-  ZOOM: 0.72,               // camera zoom-out (<1 shows more of the arena)
-  CHARGE_MS: 1000,          // hold-to-fire: ms of holding before a missile launches
+  ZOOM: 0.72,
+  CHARGE_MS: 1000,          // hold-to-fire charge time (drives the reticle)
 };
+
+// material/asteroid palette — mirrors shared/constants.js TYPES order
+const TYPES = [
+  { name: 'Rock',    color: '#9aa6b2' },
+  { name: 'Ice',     color: '#9fe8ff' },
+  { name: 'Iron',    color: '#c08457' },
+  { name: 'Copper',  color: '#e0794a' },
+  { name: 'Silver',  color: '#cdd7e2' },
+  { name: 'Crystal', color: '#c77dff' },
+  { name: 'Gold',    color: '#ffd166' },
+  { name: 'Plasma',  color: '#06d6a0' },
+];
+const SHIP_COLORS = ['#5ad1ff', '#ff6b6b', '#ffd166', '#06d6a0', '#c77dff', '#ff9f1c',
+  '#4cc9f0', '#f72585', '#90be6d', '#f8961e', '#577590', '#e0aaff'];
+const shipColor = id => SHIP_COLORS[id % SHIP_COLORS.length];
 
 // ---------- canvas ----------
 const cv = document.getElementById('game');
 const ctx = cv.getContext('2d');
-let DPR = Math.min(window.devicePixelRatio || 1, 1.5);   // cap fill-rate on hi-DPI displays
+let DPR = Math.min(window.devicePixelRatio || 1, 1.5);
 function resize() {
   DPR = Math.min(window.devicePixelRatio || 1, 1.5);
   cv.width = innerWidth * DPR; cv.height = innerHeight * DPR;
   cv.style.width = innerWidth + 'px'; cv.style.height = innerHeight + 'px';
 }
 addEventListener('resize', resize); resize();
-
-// Background is solid black with no animation (most performant possible).
+// Background is solid black, no animation.
 
 // ---------- game state ----------
 let ws = null, myId = 0;
 let myName = 'Pilot';
-const me = { x: CFG.WORLD.w / 2, y: CFG.WORLD.h / 2, vx: 0, vy: 0, hp: 100, alive: true };
-let serverMe = null;
-let score = 0, kills = 0, deaths = 0, respawnIn = 0, aliveCount = 0, playerCount = 0;
+const me = { x: CFG.WORLD.w / 2, y: CFG.WORLD.h / 2, vx: 0, vy: 0 };
+let score = 0, prevScore = 0, cargo = {}, playerCount = 0, rockTotal = 0;
 
-// other ships: id -> { buf: [{t,x,y,angle,alive,hp,bot}, …] } interpolation history
-const ships = new Map();
+const ships = new Map();   // id -> { buf: [{t,x,y,angle,bot}, …] } interpolation history
 let board = [];
-let bullets = [];          // current view missiles: [x, y, color, vx, vy]
-let bulletsAt = 0;         // performance.now() when `bullets` arrived (for extrapolation)
-const fxList = [];         // local particle effects
-const rings = [];          // expanding shockwaves: {x,y,color,r0,r1,t,max}
-let shake = 0;             // screen-shake magnitude (decays each frame)
-let flash = 0;             // brief screen flash on very close kills
-let muzzle = 0;            // muzzle-flash decay for own ship
-let chargeStart = 0;       // performance.now() when current charge began (0 = not charging)
-let fps = 60;              // smoothed frames/sec, shown in the HUD
+let bullets = [], bulletsAt = 0;   // [x,y,color,vx,vy]
+let rocks = [], rocksAt = 0;       // [id,x,y,type,radius,hp%,vx,vy]
+let mats = [], matsAt = 0;         // [x,y,type,vx,vy]
+const fxList = [];                 // particles
+const rings = [];                  // shockwaves
+const floats = [];                 // floating "+value" texts
+let shake = 0, flash = 0, muzzle = 0, chargeStart = 0, fps = 60;
+
+// deterministic irregular polygon + spin per asteroid id
+const rockShapes = new Map();
+function rockShape(id) {
+  let s = rockShapes.get(id);
+  if (!s) {
+    let seed = (id * 2654435761) >>> 0;
+    const rnd = () => { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 4294967296; };
+    const n = 8 + (id % 4);
+    const verts = [];
+    for (let i = 0; i < n; i++) verts.push(0.74 + rnd() * 0.34);
+    s = { verts, spin: rnd() * Math.PI * 2, rate: (rnd() - 0.5) * 0.5 };
+    if (rockShapes.size > 800) rockShapes.clear();
+    rockShapes.set(id, s);
+  }
+  return s;
+}
 
 // ---------- input ----------
 const keys = {};
 let mouse = { x: innerWidth / 2, y: innerHeight / 2, down: false };
-const inputHistory = [];   // {seq, mx, my} pending acknowledgement
+const inputHistory = [];
 let inputSeq = 0;
-
-addEventListener('keydown', e => {
-  keys[e.code] = true;
-  if (e.code === 'Space') e.preventDefault();
-});
+addEventListener('keydown', e => { keys[e.code] = true; if (e.code === 'Space') e.preventDefault(); });
 addEventListener('keyup', e => { keys[e.code] = false; });
 cv.addEventListener('mousemove', e => { mouse.x = e.clientX; mouse.y = e.clientY; });
 cv.addEventListener('mousedown', () => { mouse.down = true; });
@@ -71,82 +94,69 @@ function inputVector() {
   if (m > 0) { mx /= m; my /= m; }
   return { mx, my };
 }
-function aimAngle() {
-  // mouse position relative to screen centre → world angle (zoom is uniform, so unchanged)
-  return Math.atan2(mouse.y - innerHeight / 2, mouse.x - innerWidth / 2);
-}
-function shooting() { return mouse.down || keys['Space']; }
+const aimAngle = () => Math.atan2(mouse.y - innerHeight / 2, mouse.x - innerWidth / 2);
+const shooting = () => mouse.down || keys['Space'];
 
 // ---------- networking ----------
 let myRoom = null, joined = false, roomTries = 0;
-
 async function connect(name) {
   myName = name;
-  // ask the matchmaker for a room with a free slot (or a fresh room)
   let room;
   try {
-    setStatus('Finding a match…');
+    setStatus('Finding a field…');
     const r = await fetch('/assign');
     room = (await r.json()).room;
   } catch (e) { setStatus('Could not reach matchmaker. Retry.'); return; }
   myRoom = room;
-
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
   ws = new WebSocket(`${proto}://${location.host}/ws?room=${room}`);
-  setStatus('Joining room ' + room + '…');
+  setStatus('Joining sector ' + room + '…');
   ws.onopen = () => ws.send(JSON.stringify({ t: 'join', name }));
   ws.onmessage = ev => onMessage(JSON.parse(ev.data));
   ws.onclose = () => { if (!joined) setStatus('Disconnected. Refresh to rejoin.'); };
   ws.onerror = () => setStatus('Connection error.');
 }
-
 function onMessage(msg) {
   if (msg.t === 'welcome') {
-    myId = msg.id;
-    myRoom = msg.room;
-    joined = true;
+    myId = msg.id; myRoom = msg.room; joined = true;
     CFG.WORLD = msg.world;
     document.getElementById('start').style.display = 'none';
-    cv.style.cursor = 'none';      // we draw our own reticle while playing
+    cv.style.cursor = 'none';
     startInputLoop();
   } else if (msg.t === 'full') {
-    // room filled between assignment and join — grab another one
-    if (roomTries++ < 8) { setStatus('Room full — finding another…'); connect(myName); }
-    else setStatus('All rooms full right now. Try again shortly.');
+    if (roomTries++ < 8) { setStatus('Sector full — finding another…'); connect(myName); }
+    else setStatus('All sectors full right now. Try again shortly.');
   } else if (msg.t === 'snap') {
     applySnapshot(msg);
   }
 }
 
 function applySnapshot(s) {
-  aliveCount = s.alive; playerCount = s.players; board = s.board;
+  playerCount = s.players; rockTotal = s.rockTotal; board = s.board;
   const m = s.me;
-  score = m.score; kills = m.kills; deaths = m.deaths;
-  respawnIn = m.respawnIn;
-  if (m.hp < me.hp - 0.5) shake = Math.min(22, shake + (me.hp - m.hp) * 0.45); // hit feedback
-  if (me.alive && !m.alive) shake = 30;                                        // death kick
-  me.hp = m.hp; me.alive = m.alive;
+  prevScore = score; score = m.score; cargo = m.cargo || {};
+  if (score > prevScore && joined) {
+    floats.push({ x: me.x, y: me.y - 26, life: 1, text: '+' + (score - prevScore), color: '#ffe08a' });
+    if (floats.length > 24) floats.shift();
+  }
 
-  // --- reconcile own ship: snap to server, replay unacked inputs ---
-  serverMe = m;
+  // reconcile own ship: snap to server, replay unacked inputs
   me.x = m.x; me.y = m.y; me.vx = m.vx; me.vy = m.vy;
   while (inputHistory.length && inputHistory[0].seq <= m.seq) inputHistory.shift();
   for (const cmd of inputHistory) stepLocal(me, cmd.mx, cmd.my);
 
-  // --- other ships into per-entity interpolation history ---
   const now = performance.now();
+  // other ships → interpolation history buffer
   const seen = new Set();
   for (const arr of s.ships) {
-    const [id, x, y, angle, alive, hp, bot] = arr;
+    const [id, x, y, angle, bot] = arr;
     seen.add(id);
     if (id === myId) continue;
-    const sample = { t: now, x, y, angle, alive, hp, bot };
+    const sample = { t: now, x, y, angle, bot };
     const e = ships.get(id);
-    if (!e) { ships.set(id, { buf: [sample] }); }
+    if (!e) ships.set(id, { buf: [sample] });
     else {
       e.buf.push(sample);
-      // keep ~400ms of history so we can interpolate INTERP_DELAY in the past
-      // even when snapshots arrive irregularly
       const cutoff = now - 400;
       while (e.buf.length > 2 && e.buf[0].t < cutoff) e.buf.shift();
     }
@@ -154,22 +164,28 @@ function applySnapshot(s) {
   for (const id of ships.keys()) if (!seen.has(id)) ships.delete(id);
 
   bullets = s.bullets; bulletsAt = now;
+  rocks = s.rocks; rocksAt = now;
+  mats = s.mats; matsAt = now;
+
   for (const ev of s.fx) {
-    const [x, y, t] = ev;
-    spawnFx(x, y, t);
-    if (t === 'kill') {
-      spawnRing(x, y, '#ffd08a', 10, 150, 0.55);
-      spawnRing(x, y, '#ff7b4a', 4, 90, 0.4);
+    const [x, y, t, c, sz] = ev;
+    if (t === 'boom') {
+      const col = (TYPES[c] || TYPES[0]).color;
+      pushParticles(x, y, Math.min(28, Math.max(8, Math.round((sz || 20) / 5))),
+        (sz || 20) * 4, 0.85, [col, '#ffffff', '#ffd9a0'], 2.6);
+      spawnRing(x, y, col, (sz || 20) * 0.5, (sz || 20) * 4, 0.5);
       const d = Math.hypot(x - me.x, y - me.y);
-      if (d < 520) flash = Math.min(0.5, flash + (1 - d / 520) * 0.45);
+      if (d < 520) flash = Math.min(0.4, flash + (1 - d / 520) * 0.35);
+    } else if (t === 'pickup') {
+      const col = (TYPES[c] || TYPES[0]).color;
+      pushParticles(x, y, 8, 90, 0.4, [col, '#ffffff'], 1.6);
+      spawnRing(x, y, col, 3, 30, 0.3);
     } else {
-      spawnRing(x, y, '#bfe9ff', 2, 26, 0.28);
+      pushParticles(x, y, 6, 90, 0.3, ['#bfe9ff', '#ffffff'], 1.5);  // hit
     }
   }
-  for (const k of s.kills) addFeed(k.k, k.v);
 }
 
-// local physics step (mirrors server) used for prediction
 function stepLocal(o, mx, my) {
   o.vx += mx * CFG.ACCEL * CFG.DT;
   o.vy += my * CFG.ACCEL * CFG.DT;
@@ -182,7 +198,6 @@ function stepLocal(o, mx, my) {
   o.y = Math.max(r, Math.min(CFG.WORLD.h - r, o.y));
 }
 
-// send inputs at fixed rate + predict locally
 function startInputLoop() {
   setInterval(() => {
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
@@ -190,58 +205,40 @@ function startInputLoop() {
     const aim = aimAngle();
     const shoot = shooting();
     inputSeq++;
-    if (me.alive) {
-      stepLocal(me, mx, my);                       // client-side prediction
-      inputHistory.push({ seq: inputSeq, mx, my });
-      if (inputHistory.length > 120) inputHistory.shift();
-      // hold-to-charge feedback (server owns the actual launch). Holding for
-      // CHARGE_MS fires a missile; releasing cancels the charge.
-      const t = performance.now();
-      if (shoot) {
-        if (!chargeStart) chargeStart = t;
-        if (t - chargeStart >= CFG.CHARGE_MS) {       // fully charged → launch
-          chargeStart = t;                            // recharge while still held
-          muzzle = 1; shake = Math.min(22, shake + 7);
-        }
-      } else {
-        chargeStart = 0;
-      }
-    } else {
-      chargeStart = 0;
-    }
+    stepLocal(me, mx, my);
+    inputHistory.push({ seq: inputSeq, mx, my });
+    if (inputHistory.length > 120) inputHistory.shift();
+    // hold-to-charge feedback (server owns the actual launch)
+    const t = performance.now();
+    if (shoot) {
+      if (!chargeStart) chargeStart = t;
+      if (t - chargeStart >= CFG.CHARGE_MS) { chargeStart = t; muzzle = 1; shake = Math.min(22, shake + 7); }
+    } else chargeStart = 0;
     ws.send(JSON.stringify({ t: 'input', seq: inputSeq, mx, my, aim, shoot }));
   }, 1000 / CFG.INPUT_RATE);
 }
 
 // ---------- effects ----------
-function spawnFx(x, y, type) {
-  const kill = type === 'kill';
-  const n = kill ? 30 : 8;
+function pushParticles(x, y, n, spd, life, colors, rad) {
   for (let i = 0; i < n; i++) {
-    const a = Math.random() * Math.PI * 2;
-    const sp = (kill ? 150 : 80) * (0.35 + Math.random());
+    const a = Math.random() * Math.PI * 2, s = spd * (0.35 + Math.random() * 0.8);
     fxList.push({
-      x, y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp,
-      life: 1, max: kill ? 0.6 + Math.random() * 0.5 : 0.35,
-      color: kill ? (Math.random() < 0.5 ? '#ffd166' : '#ff7b4a') : '#bfe9ff',
-      r: kill ? 2 + Math.random() * 2.5 : 1.6,
+      x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s,
+      life: 1, max: life * (0.6 + Math.random() * 0.6),
+      color: colors[(Math.random() * colors.length) | 0], r: rad * (0.6 + Math.random() * 0.8),
     });
   }
-  if (fxList.length > 500) fxList.splice(0, fxList.length - 500);   // soft cap
+  if (fxList.length > 600) fxList.splice(0, fxList.length - 600);
 }
 function spawnRing(x, y, color, r0, r1, max) {
   rings.push({ x, y, color, r0, r1, t: 0, max });
   if (rings.length > 60) rings.shift();
 }
-function addFeed(k, v) {
-  const f = document.getElementById('feed');
-  const d = document.createElement('div');
-  d.innerHTML = `<span class="k">${esc(k)}</span> ▸ <span class="v">${esc(v)}</span>`;
-  f.prepend(d);
-  while (f.children.length > 6) f.lastChild.remove();
-  setTimeout(() => d.remove(), 5200);
-}
 function esc(s) { return ('' + s).replace(/[<>&]/g, c => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[c])); }
+function hexA(hex, a) {
+  const n = parseInt(hex.slice(1), 16);
+  return `rgba(${n >> 16 & 255},${n >> 8 & 255},${n & 255},${a})`;
+}
 
 // ---------- render ----------
 let lastFrame = performance.now();
@@ -252,23 +249,39 @@ function render(now) {
   const Z = CFG.ZOOM;
 
   ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
-  ctx.fillStyle = '#000';                              // solid black, no animation
+  ctx.fillStyle = '#000';
   ctx.fillRect(0, 0, innerWidth, innerHeight);
 
-  // decay transient feedback
   shake *= 0.86; if (shake < 0.3) shake = 0;
   muzzle *= 0.7; if (muzzle < 0.02) muzzle = 0;
   flash *= 0.88; if (flash < 0.02) flash = 0;
   const shX = (Math.random() - 0.5) * shake, shY = (Math.random() - 0.5) * shake;
-
   const camX = me.x, camY = me.y;
   const cx = innerWidth / 2 + shX, cy = innerHeight / 2 + shY;
   const w2s = (wx, wy) => [(wx - camX) * Z + cx, (wy - camY) * Z + cy];
 
   drawBounds(w2s);
 
-  // missiles — extrapolate along velocity between 20 Hz snapshots so fast
-  // projectiles glide every frame instead of teleporting once per snapshot.
+  // asteroids (extrapolated along drift)
+  const rAge = Math.min(0.2, (now - rocksAt) / 1000);
+  for (const r of rocks) {
+    const [id, rx, ry, type, radius, hpPct, vx, vy] = r;
+    const [sx, sy] = w2s(rx + vx * rAge, ry + vy * rAge);
+    const screenR = radius * Z;
+    if (sx < -screenR - 30 || sy < -screenR - 30 || sx > innerWidth + screenR + 30 || sy > innerHeight + screenR + 30) continue;
+    drawRock(sx, sy, type, radius, hpPct, id, now, Z);
+  }
+
+  // material drops (extrapolated)
+  const mAge = Math.min(0.2, (now - matsAt) / 1000);
+  for (const m of mats) {
+    const [mx, my, type, vx, vy] = m;
+    const [sx, sy] = w2s(mx + vx * mAge, my + vy * mAge);
+    if (sx < -30 || sy < -30 || sx > innerWidth + 30 || sy > innerHeight + 30) continue;
+    drawMat(sx, sy, type, Z, now + sx);
+  }
+
+  // bullets (extrapolated)
   const bAge = Math.min(0.2, (now - bulletsAt) / 1000);
   for (const b of bullets) {
     const [bx, by, color, vx, vy] = b;
@@ -277,20 +290,19 @@ function render(now) {
     drawMissile(sx, sy, Math.atan2(vy, vx), color, Z);
   }
 
-  // other ships — sampled from each ship's history at (now − INTERP_DELAY)
+  // other ships (interpolated)
   const renderTime = now - CFG.INTERP_DELAY;
-  for (const e of ships.values()) {
+  for (const [id, e] of ships) {
     const p = sampleAt(e, renderTime);
-    if (!p.alive) continue;
     const [sx, sy] = w2s(p.x, p.y);
     if (sx < -50 || sy < -50 || sx > innerWidth + 50 || sy > innerHeight + 50) continue;
-    drawShip(sx, sy, p.angle, p.bot ? '#9fb3c8' : '#ff6b6b', p.hp, false, p.moving, Z);
+    drawShip(sx, sy, p.angle, shipColor(id), false, p.moving, Z);
   }
 
   // self (predicted)
-  if (me.alive) {
+  {
     const { mx, my } = inputVector();
-    drawShip(cx, cy, aimAngle(), '#5ad1ff', me.hp, true, (mx || my) !== 0, Z);
+    drawShip(cx, cy, aimAngle(), '#5ad1ff', true, (mx || my) !== 0, Z);
   }
 
   // particles
@@ -312,32 +324,42 @@ function render(now) {
     const r = rings[i];
     r.t += dt / r.max;
     if (r.t >= 1) { rings.splice(i, 1); continue; }
-    const e = 1 - (1 - r.t) * (1 - r.t);             // ease-out
-    const rad = (r.r0 + (r.r1 - r.r0) * e) * Z;
+    const e = 1 - (1 - r.t) * (1 - r.t);
     const [sx, sy] = w2s(r.x, r.y);
     ctx.globalAlpha = (1 - r.t) * 0.8;
     ctx.strokeStyle = r.color;
     ctx.lineWidth = (1 + (1 - r.t) * 2.5) * Z;
-    ctx.beginPath(); ctx.arc(sx, sy, rad, 0, Math.PI * 2); ctx.stroke();
+    ctx.beginPath(); ctx.arc(sx, sy, (r.r0 + (r.r1 - r.r0) * e) * Z, 0, Math.PI * 2); ctx.stroke();
   }
   ctx.globalAlpha = 1;
   ctx.globalCompositeOperation = 'source-over';
 
+  // floating "+value" texts
+  ctx.textAlign = 'center'; ctx.font = '700 14px system-ui, sans-serif';
+  for (let i = floats.length - 1; i >= 0; i--) {
+    const f = floats[i];
+    f.life -= dt / 1.1; f.y -= 34 * dt;
+    if (f.life <= 0) { floats.splice(i, 1); continue; }
+    const [sx, sy] = w2s(f.x, f.y);
+    ctx.globalAlpha = Math.max(0, Math.min(1, f.life * 1.4));
+    ctx.fillStyle = f.color;
+    ctx.fillText(f.text, sx, sy);
+  }
+  ctx.globalAlpha = 1; ctx.textAlign = 'left';
+
   if (flash > 0) { ctx.fillStyle = `rgba(255,240,210,${flash})`; ctx.fillRect(0, 0, innerWidth, innerHeight); }
-  if (joined && me.alive) drawReticle(now);
+  if (joined) drawReticle(now);
   drawMinimap();
   drawHUD();
   requestAnimationFrame(render);
 }
 
-// sample an entity's history at time t (= now − INTERP_DELAY), interpolating
-// between the two buffered snapshots that bracket t
 function sampleAt(e, t) {
   const buf = e.buf, n = buf.length;
   if (n === 1) return { ...buf[0], moving: false };
   let i = n - 1;
-  while (i > 0 && buf[i].t > t) i--;          // last sample with t <= renderTime
-  const a = buf[i], b = buf[i + 1] || a;      // no b → t is newer than newest
+  while (i > 0 && buf[i].t > t) i--;
+  const a = buf[i], b = buf[i + 1] || a;
   const span = b.t - a.t;
   let f = span > 0 ? (t - a.t) / span : 0;
   f = f < 0 ? 0 : f > 1 ? 1 : f;
@@ -345,7 +367,7 @@ function sampleAt(e, t) {
     x: a.x + (b.x - a.x) * f,
     y: a.y + (b.y - a.y) * f,
     angle: lerpAngle(a.angle, b.angle, f),
-    alive: b.alive, hp: b.hp, bot: b.bot,
+    bot: b.bot,
     moving: Math.hypot(b.x - a.x, b.y - a.y) > 1.5,
   };
 }
@@ -359,13 +381,10 @@ function lerpAngle(a, b, f) {
 function drawBounds(w2s) {
   const [x0, y0] = w2s(0, 0);
   const [x1, y1] = w2s(CFG.WORLD.w, CFG.WORLD.h);
-  ctx.strokeStyle = 'rgba(90,209,255,.35)'; ctx.lineWidth = 3;
-  ctx.shadowColor = '#5ad1ff'; ctx.shadowBlur = 12;
+  ctx.strokeStyle = 'rgba(90,209,255,.28)'; ctx.lineWidth = 2;
   ctx.strokeRect(x0, y0, x1 - x0, y1 - y0);
-  ctx.shadowBlur = 0;
 }
 
-// lighten (amt>0 toward white) or darken (amt<0 toward black) a #rrggbb colour
 function shade(hex, amt) {
   const n = parseInt(hex.slice(1), 16);
   let r = n >> 16 & 255, g = n >> 8 & 255, b = n & 255;
@@ -374,129 +393,134 @@ function shade(hex, amt) {
   return `rgb(${r | 0},${g | 0},${b | 0})`;
 }
 
-function drawShip(sx, sy, angle, color, hp, self, thrust, Z) {
+function drawRock(sx, sy, type, radius, hpPct, id, now, Z) {
+  const t = TYPES[type] || TYPES[0];
+  const shp = rockShape(id);
+  const ang = shp.spin + now * 0.001 * shp.rate;
+  const verts = shp.verts, n = verts.length;
   ctx.save();
   ctx.translate(sx, sy);
+  // rare materials get a soft halo so they stand out
+  if (type >= 5) {
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.fillStyle = hexA(t.color, 0.18);
+    ctx.beginPath(); ctx.arc(0, 0, radius * Z * 1.5, 0, Math.PI * 2); ctx.fill();
+    ctx.globalCompositeOperation = 'source-over';
+  }
+  ctx.rotate(ang);
+  ctx.scale(Z, Z);
+  ctx.beginPath();
+  for (let i = 0; i < n; i++) {
+    const a = i / n * Math.PI * 2, rr = radius * verts[i];
+    const px = Math.cos(a) * rr, py = Math.sin(a) * rr;
+    if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+  }
+  ctx.closePath();
+  ctx.fillStyle = t.color; ctx.fill();
+  // darker offset inner blob for a touch of depth
+  ctx.fillStyle = shade(t.color, -0.35);
+  ctx.beginPath(); ctx.arc(-radius * 0.18, radius * 0.16, radius * 0.4, 0, Math.PI * 2); ctx.fill();
+  ctx.strokeStyle = shade(t.color, 0.5); ctx.lineWidth = 1.4; ctx.stroke();
+  // damage darkening as it gets mined down
+  if (hpPct < 100) {
+    ctx.globalAlpha = (100 - hpPct) / 100 * 0.5;
+    ctx.fillStyle = '#000';
+    ctx.beginPath();
+    for (let i = 0; i < n; i++) {
+      const a = i / n * Math.PI * 2, rr = radius * verts[i];
+      const px = Math.cos(a) * rr, py = Math.sin(a) * rr;
+      if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+    }
+    ctx.closePath(); ctx.fill();
+    ctx.globalAlpha = 1;
+  }
+  ctx.restore();
+}
 
-  // soft glow under self only — one gradient, cheap, reads clearly in the crowd
+function drawMat(sx, sy, type, Z, phase) {
+  const col = (TYPES[type] || TYPES[0]).color;
+  const r = 7 * Z * (0.85 + 0.15 * Math.sin(phase * 0.012));
+  ctx.save();
+  ctx.translate(sx, sy);
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.fillStyle = hexA(col, 0.5);
+  ctx.beginPath(); ctx.arc(0, 0, r * 1.7, 0, Math.PI * 2); ctx.fill();
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.rotate(phase * 0.004);
+  ctx.fillStyle = col;
+  ctx.beginPath(); ctx.moveTo(0, -r); ctx.lineTo(r * 0.72, 0); ctx.lineTo(0, r); ctx.lineTo(-r * 0.72, 0); ctx.closePath(); ctx.fill();
+  ctx.strokeStyle = 'rgba(255,255,255,.85)'; ctx.lineWidth = 1; ctx.stroke();
+  ctx.restore();
+}
+
+function drawShip(sx, sy, angle, color, self, thrust, Z) {
+  ctx.save();
+  ctx.translate(sx, sy);
   if (self) {
     const gr = ctx.createRadialGradient(0, 0, 0, 0, 0, 34 * Z);
-    gr.addColorStop(0, hexA(color, 0.32));
-    gr.addColorStop(1, hexA(color, 0));
+    gr.addColorStop(0, hexA(color, 0.32)); gr.addColorStop(1, hexA(color, 0));
     ctx.fillStyle = gr;
     ctx.beginPath(); ctx.arc(0, 0, 34 * Z, 0, Math.PI * 2); ctx.fill();
   }
-
   ctx.rotate(angle);
   ctx.scale(Z, Z);
-
-  // engine flame when thrusting
   if (thrust) {
     const len = 12 + Math.random() * 10;
     const g = ctx.createLinearGradient(-6, 0, -6 - len, 0);
     g.addColorStop(0, '#fff'); g.addColorStop(0.4, '#ffd166'); g.addColorStop(1, 'rgba(255,107,43,0)');
     ctx.fillStyle = g;
-    ctx.beginPath();
-    ctx.moveTo(-6, 5); ctx.lineTo(-6 - len, 0); ctx.lineTo(-6, -5);
-    ctx.closePath(); ctx.fill();
+    ctx.beginPath(); ctx.moveTo(-6, 5); ctx.lineTo(-6 - len, 0); ctx.lineTo(-6, -5); ctx.closePath(); ctx.fill();
   }
-
-  // hull — gradient only for your own ship; the crowd uses a flat fill (creating
-  // a gradient per ship per frame was the real framerate killer at 100 ships).
   if (self) {
     const hg = ctx.createLinearGradient(-12, -11, 16, 11);
-    hg.addColorStop(0, shade(color, -0.4));
-    hg.addColorStop(0.5, color);
-    hg.addColorStop(1, shade(color, 0.55));
+    hg.addColorStop(0, shade(color, -0.4)); hg.addColorStop(0.5, color); hg.addColorStop(1, shade(color, 0.55));
     ctx.fillStyle = hg;
-  } else {
-    ctx.fillStyle = color;
-  }
+  } else ctx.fillStyle = color;
   ctx.beginPath();
   ctx.moveTo(18, 0); ctx.lineTo(-12, 11); ctx.lineTo(-6, 0); ctx.lineTo(-12, -11);
   ctx.closePath(); ctx.fill();
-  // bright edge + cockpit
   ctx.strokeStyle = self ? 'rgba(255,255,255,.85)' : 'rgba(255,255,255,.45)';
   ctx.lineWidth = 1.2; ctx.stroke();
   ctx.fillStyle = 'rgba(220,245,255,.9)';
   ctx.beginPath(); ctx.arc(3, 0, 2.4, 0, Math.PI * 2); ctx.fill();
   ctx.restore();
-
-  // health pip above non-self ships (screen-space, scaled with zoom)
-  if (!self && hp < 100) {
-    const w = 30 * Z, yo = 24 * Z;
-    ctx.fillStyle = 'rgba(0,0,0,.5)'; ctx.fillRect(sx - w / 2, sy - yo, w, 3.5);
-    ctx.fillStyle = hp > 50 ? '#06d6a0' : hp > 25 ? '#ffd166' : '#ff6b6b';
-    ctx.fillRect(sx - w / 2, sy - yo, w * hp / 100, 3.5);
-  }
 }
 
-// a deliberate, glowing missile with fins and an exhaust trail
 function drawMissile(sx, sy, angle, color, Z) {
   ctx.save();
-  ctx.translate(sx, sy);
-  ctx.rotate(angle);
-  ctx.scale(Z, Z);
-
-  // exhaust trail (additive)
+  ctx.translate(sx, sy); ctx.rotate(angle); ctx.scale(Z, Z);
   ctx.globalCompositeOperation = 'lighter';
   const tg = ctx.createLinearGradient(-6, 0, -60, 0);
-  tg.addColorStop(0, hexA(color, 0.9));
-  tg.addColorStop(0.5, hexA(color, 0.25));
-  tg.addColorStop(1, hexA(color, 0));
+  tg.addColorStop(0, hexA(color, 0.9)); tg.addColorStop(0.5, hexA(color, 0.25)); tg.addColorStop(1, hexA(color, 0));
   ctx.fillStyle = tg;
-  ctx.beginPath();
-  ctx.moveTo(-3, 5.5); ctx.lineTo(-60, 0); ctx.lineTo(-3, -5.5); ctx.closePath(); ctx.fill();
+  ctx.beginPath(); ctx.moveTo(-3, 5.5); ctx.lineTo(-60, 0); ctx.lineTo(-3, -5.5); ctx.closePath(); ctx.fill();
   ctx.globalCompositeOperation = 'source-over';
-
-  // fins
   ctx.fillStyle = color;
   ctx.beginPath(); ctx.moveTo(-7, 4.5); ctx.lineTo(-13, 9); ctx.lineTo(-4, 4.5); ctx.closePath(); ctx.fill();
   ctx.beginPath(); ctx.moveTo(-7, -4.5); ctx.lineTo(-13, -9); ctx.lineTo(-4, -4.5); ctx.closePath(); ctx.fill();
-
-  // body
   ctx.fillStyle = '#eaf4ff';
   ctx.beginPath();
   ctx.moveTo(16, 0); ctx.lineTo(5, 7); ctx.lineTo(-10, 4.5); ctx.lineTo(-10, -4.5); ctx.lineTo(5, -7);
   ctx.closePath(); ctx.fill();
-
-  // hot warhead tip
   ctx.fillStyle = '#fff';
   ctx.beginPath(); ctx.arc(11, 0, 3, 0, Math.PI * 2); ctx.fill();
   ctx.restore();
 }
 
-function hexA(hex, a) {
-  const n = parseInt(hex.slice(1), 16);
-  return `rgba(${n >> 16 & 255},${n >> 8 & 255},${n & 255},${a})`;
-}
-
-// crosshair + missile reload indicator at the mouse
 function drawReticle(now) {
   const prog = chargeStart ? Math.min(1, (now - chargeStart) / CFG.CHARGE_MS) : 0;
   const x = mouse.x, y = mouse.y, R = 15;
-  ctx.save();
-  ctx.lineWidth = 2;
+  ctx.save(); ctx.lineWidth = 2;
   ctx.strokeStyle = 'rgba(255,255,255,.18)';
   ctx.beginPath(); ctx.arc(x, y, R, 0, Math.PI * 2); ctx.stroke();
   if (prog < 1) {
-    // reloading: an arc that sweeps to full
     ctx.strokeStyle = 'rgba(255,160,90,.95)';
     ctx.beginPath(); ctx.arc(x, y, R, -Math.PI / 2, -Math.PI / 2 + prog * Math.PI * 2); ctx.stroke();
   } else {
-    // armed
     ctx.strokeStyle = 'rgba(90,209,255,.95)';
     ctx.beginPath(); ctx.arc(x, y, R, 0, Math.PI * 2); ctx.stroke();
     ctx.fillStyle = 'rgba(90,209,255,.9)';
     ctx.beginPath(); ctx.arc(x, y, 1.8, 0, Math.PI * 2); ctx.fill();
-  }
-  // tiny tick marks
-  ctx.strokeStyle = 'rgba(255,255,255,.4)';
-  for (const a of [0, Math.PI / 2, Math.PI, -Math.PI / 2]) {
-    ctx.beginPath();
-    ctx.moveTo(x + Math.cos(a) * (R + 3), y + Math.sin(a) * (R + 3));
-    ctx.lineTo(x + Math.cos(a) * (R + 7), y + Math.sin(a) * (R + 7));
-    ctx.stroke();
   }
   ctx.restore();
 }
@@ -508,37 +532,39 @@ function drawMinimap() {
   ctx.strokeStyle = 'rgba(90,209,255,.3)'; ctx.lineWidth = 1;
   ctx.fillRect(x0, y0, S, S); ctx.strokeRect(x0, y0, S, S);
   const sx = S / CFG.WORLD.w, sy = S / CFG.WORLD.h;
-  for (const e of ships.values()) {
-    const p = e.buf[e.buf.length - 1]; if (!p.alive) continue;
-    ctx.fillStyle = p.bot ? 'rgba(159,179,200,.7)' : '#ff6b6b';
+  ctx.fillStyle = 'rgba(150,160,175,.5)';
+  for (const r of rocks) ctx.fillRect(x0 + r[1] * sx - 1, y0 + r[2] * sy - 1, 1.5, 1.5);
+  for (const [id, e] of ships) {
+    const p = e.buf[e.buf.length - 1];
+    ctx.fillStyle = p.bot ? 'rgba(159,179,200,.7)' : '#ffd166';
     ctx.fillRect(x0 + p.x * sx - 1, y0 + p.y * sy - 1, 2, 2);
   }
-  if (me.alive) {
-    ctx.fillStyle = '#5ad1ff';
-    ctx.fillRect(x0 + me.x * sx - 2, y0 + me.y * sy - 2, 4, 4);
-  }
+  ctx.fillStyle = '#5ad1ff';
+  ctx.fillRect(x0 + me.x * sx - 2, y0 + me.y * sy - 2, 4, 4);
 }
 
 function drawHUD() {
   document.getElementById('stats').innerHTML =
-    `<b>${esc(myName)}</b> &nbsp; Score <b>${score}</b><br>` +
-    `Kills ${kills} · Deaths ${deaths}<br>` +
-    `Room <b>${myRoom ?? '–'}</b> · Alive <b>${aliveCount}</b> / ${playerCount}<br>` +
+    `<b>${esc(myName)}</b> &nbsp; Score <b>${score.toLocaleString()}</b><br>` +
+    `Sector <b>${myRoom ?? '–'}</b> · Miners <b>${playerCount}</b> · Rocks ${rockTotal}<br>` +
     `<span style="opacity:.55">${Math.round(fps)} fps</span>`;
-  document.getElementById('hpfill').style.width = Math.max(0, me.hp) + '%';
+
+  // cargo hold (per-type counts)
+  let cg = '';
+  for (let i = 0; i < TYPES.length; i++) {
+    const c = cargo[i] | 0;
+    if (!c) continue;
+    cg += `<span class="ci"><i style="background:${TYPES[i].color}"></i>${TYPES[i].name} <b>${c}</b></span>`;
+  }
+  const cargoEl = document.getElementById('cargo');
+  if (cargoEl) cargoEl.innerHTML = cg || '<span class="empty">cargo empty — go mine!</span>';
 
   let rows = '';
   for (const r of board) {
     rows += `<div class="row ${r.name === myName ? 'me' : ''} ${r.bot ? 'bot' : ''}">` +
-      `<span>${esc(r.name)}</span><span>${r.score}</span></div>`;
+      `<span>${esc(r.name)}</span><span>${(r.score | 0).toLocaleString()}</span></div>`;
   }
   document.getElementById('boardRows').innerHTML = rows;
-
-  const death = document.getElementById('death');
-  if (!me.alive) {
-    death.style.display = 'grid';
-    document.getElementById('respawnT').textContent = (respawnIn / 1000).toFixed(1);
-  } else death.style.display = 'none';
 }
 
 // ---------- boot ----------
@@ -571,7 +597,7 @@ async function loadHallOfFame() {
         `<span class="sc">${(d.score | 0).toLocaleString()}</span>` +
       `</li>`).join('');
   } catch {
-    wrap.style.display = 'none';   // e.g. the Node dev server has no /leaderboard
+    wrap.style.display = 'none';
   }
 }
 loadHallOfFame();

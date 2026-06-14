@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
-<title>Nova 100 — Multiplayer Space Shooter</title>
+<title>Nova 100 — Asteroid Miner</title>
 <style>
   :root { --accent:#5ad1ff; --bg:#05070f; }
   * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -25,28 +25,14 @@
     white-space: nowrap; }
   #board .row.me { color: #ffd166; font-weight: 600; }
   #board .bot { opacity: .65; }
-  #feed { bottom: 16px; right: 16px; width: 280px; text-align: right;
-    font-size: 13px; }
-  #feed div { opacity: 0; animation: fade 5s forwards; }
-  @keyframes fade { 0%{opacity:0;transform:translateX(10px)} 8%{opacity:1;transform:none}
-    80%{opacity:1} 100%{opacity:0} }
-  #feed .k { color: #06d6a0; } #feed .v { color: #ff6b6b; }
-
-  /* health bar */
-  #hpwrap { bottom: 16px; left: 16px; width: 280px; }
-  #hpbar { height: 14px; background: rgba(255,255,255,.12); border-radius: 7px;
-    overflow: hidden; border: 1px solid rgba(255,255,255,.2); }
-  #hpfill { height: 100%; width: 100%; background: linear-gradient(90deg,#06d6a0,#5ad1ff);
-    transition: width .12s linear; }
-  #hpwrap .label { font-size: 11px; letter-spacing: 2px; margin-bottom: 4px;
-    text-transform: uppercase; opacity: .8; }
-
-  /* respawn / death overlay */
-  #death { position: fixed; inset: 0; display: none; place-items: center; z-index: 8;
-    background: radial-gradient(circle, rgba(255,40,60,.12), rgba(0,0,0,.55)); }
-  #death .box { text-align: center; }
-  #death h2 { font-size: 32px; letter-spacing: 3px; color: #ff6b6b; }
-  #death p { margin-top: 8px; opacity: .85; }
+  /* cargo hold */
+  #cargo { bottom: 16px; left: 16px; max-width: 62vw; display: flex; flex-wrap: wrap;
+    gap: 6px 14px; font-size: 13px; }
+  #cargo .ci { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+  #cargo .ci i { width: 9px; height: 9px; border-radius: 2px; display: inline-block;
+    box-shadow: 0 0 6px currentColor; }
+  #cargo .ci b { color: #fff; }
+  #cargo .empty { opacity: .5; }
 
   /* start screen */
   #start { position: fixed; inset: 0; display: grid; place-items: center; z-index: 20;
@@ -89,31 +75,23 @@
   <canvas id="game"></canvas>
 
   <div id="stats" class="hud"></div>
-  <div id="board" class="hud"><h3>Leaderboard</h3><div id="boardRows"></div></div>
-  <div id="feed" class="hud"></div>
-  <div id="hpwrap" class="hud">
-    <div class="label">Hull</div>
-    <div id="hpbar"><div id="hpfill"></div></div>
-  </div>
-
-  <div id="death"><div class="box">
-    <h2>SHIP DESTROYED</h2>
-    <p>Respawning in <span id="respawnT">2.5</span>s…</p>
-  </div></div>
+  <div id="board" class="hud"><h3>Top Miners</h3><div id="boardRows"></div></div>
+  <div id="cargo" class="hud"></div>
 
   <div id="start">
     <div class="panel">
       <h1>NOVA&nbsp;100</h1>
-      <div class="sub">100-PLAYER FREE-FOR-ALL · LAST GUNS BLAZING</div>
+      <div class="sub">MINE ASTEROIDS · COLLECT MATERIALS · TOP THE BOARD</div>
       <input id="name" maxlength="16" placeholder="Call sign" autocomplete="off" />
       <button id="play">LAUNCH</button>
       <div id="status"></div>
       <div class="controls">
         <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> thrust &nbsp;·&nbsp;
-        <kbd>Mouse</kbd> aim &nbsp;·&nbsp; <kbd>Click</kbd>/<kbd>Space</kbd> fire
+        <kbd>Mouse</kbd> aim &nbsp;·&nbsp; <kbd>hold Click</kbd>/<kbd>Space</kbd> charge &amp; fire<br>
+        shatter asteroids · fly over the materials to scoop them up
       </div>
       <div id="halloffame">
-        <h3>★ All-Time Top 100</h3>
+        <h3>★ All-Time Top Miners</h3>
         <ol id="hofRows"><li class="muted">Loading…</li></ol>
       </div>
     </div>
