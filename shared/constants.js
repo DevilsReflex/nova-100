@@ -22,7 +22,7 @@ export const BULLET_DAMAGE = 50;        // damage dealt to an asteroid per hit
 export const CHARGE_MS = 1000;          // hold this long to launch a shot
 
 // Networking / interest management
-export const VIEW_RADIUS = 2500;        // entities within this range are sent — well
+export const VIEW_RADIUS = 2200;        // entities within this range are sent — well
                                         // beyond the zoomed-out view so they load
                                         // off-screen (no pop-in as you fly)
 
@@ -40,7 +40,7 @@ export const TYPES = [
 ];
 
 // Asteroids
-export const ASTEROID_COUNT = 160;      // target population kept stocked in the arena
+export const ASTEROID_COUNT = 100;      // target population kept stocked in the arena (lighter)
 export const ASTEROID_R_MIN = 18;
 export const ASTEROID_R_MAX = 64;
 export const ASTEROID_SPLIT_MIN_R = 28; // larger than this splits into two on death
@@ -57,5 +57,5 @@ export const MAGNET_RADIUS = 160;       // drops are pulled toward a ship within
 export const MAGNET_ACCEL = 700;        // px/s^2 magnet pull
 
 // Bots
-export const BOT_COUNT_TARGET = 40;     // miner bots keep the arena lively
+export const BOT_COUNT_TARGET = 16;     // miner bots keep the arena lively (fewer = lighter + less churn)
 export const BOT_VIEW = 1100;           // bot awareness range

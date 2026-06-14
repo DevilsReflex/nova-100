@@ -134,13 +134,16 @@ export class Game {
         if (s.charge >= CHARGE_MS) { this.fire(s); s.charge = 0; }
       } else s.charge = 0;
 
-      // hit an asteroid → explode, respawn after RESPAWN_MS
-      for (const r of this.rocks.values()) {
-        const dx = s.x - r.x, dy = s.y - r.y, rr = SHIP_RADIUS + r.radius;
-        if (dx * dx + dy * dy <= rr * rr) {
-          this.events.push({ t: 'ship', x: s.x, y: s.y });
-          s.respawnAt = now + RESPAWN_MS; s.vx = 0; s.vy = 0; s.charge = 0;
-          break;
+      // human ships explode on hitting an asteroid; bots are immune so the field
+      // isn't full of respawn churn (also drops the O(rocks) check for every bot)
+      if (!s.isBot) {
+        for (const r of this.rocks.values()) {
+          const dx = s.x - r.x, dy = s.y - r.y, rr = SHIP_RADIUS + r.radius;
+          if (dx * dx + dy * dy <= rr * rr) {
+            this.events.push({ t: 'ship', x: s.x, y: s.y });
+            s.respawnAt = now + RESPAWN_MS; s.vx = 0; s.vy = 0; s.charge = 0;
+            break;
+          }
         }
       }
     }

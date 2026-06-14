@@ -1,6 +1,7 @@
 // Bot AI for asteroid mining. Each bot scoops up a nearby material drop if one
 // is close, otherwise flies to the nearest asteroid and holds fire to shatter
-// it. Keeps the field busy and competitive.
+// it. Bots are immune to meteor collisions (see game.js), so they don't clutter
+// the field with respawns.
 import { BOT_VIEW } from './constants.js';
 
 const BOT_NAMES = [
@@ -51,7 +52,6 @@ export function thinkBots(game) {
     }
 
     if (!rock) {
-      // nothing in range — drift around looking for a field
       s.input.mx = Math.cos(botSeq * 0.013 + s.id) * 0.5;
       s.input.my = Math.sin(botSeq * 0.017 + s.id) * 0.5;
       s.input.shoot = false;

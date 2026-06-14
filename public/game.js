@@ -61,6 +61,7 @@ const fxList = [];                 // particles
 const rings = [];                  // shockwaves
 const floats = [];                 // floating "+value" texts
 let shake = 0, flash = 0, muzzle = 0, chargeStart = 0, fps = 60;
+let snapCount = 0, netHz = 0, netT = performance.now();   // snapshot arrival rate (network/server health)
 
 // deterministic irregular polygon + spin per asteroid id
 const rockShapes = new Map();
@@ -139,6 +140,7 @@ function onMessage(msg) {
 }
 
 function applySnapshot(s) {
+  snapCount++;
   playerCount = s.players; rockTotal = s.rockTotal; board = s.board;
   const m = s.me;
   prevScore = score; score = m.score; cargo = m.cargo || {};
@@ -260,6 +262,7 @@ function render(now) {
   const dt = Math.min(0.05, (now - lastFrame) / 1000);
   lastFrame = now;
   if (dt > 0) fps = fps * 0.92 + (1 / dt) * 0.08;
+  if (now - netT >= 1000) { netHz = Math.round(snapCount * 1000 / (now - netT)); snapCount = 0; netT = now; }
   const Z = CFG.ZOOM;
 
   ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
@@ -574,7 +577,7 @@ function drawHUD() {
   document.getElementById('stats').innerHTML =
     `<b>${esc(myName)}</b> &nbsp; Score <b>${score.toLocaleString()}</b><br>` +
     `Sector <b>${myRoom ?? '–'}</b> · Miners <b>${playerCount}</b> · Rocks ${rockTotal}<br>` +
-    `<span style="opacity:.55">${Math.round(fps)} fps</span>`;
+    `<span style="opacity:.55">${Math.round(fps)} fps · ${netHz}Hz net</span>`;
 
   // cargo hold (per-type counts)
   let cg = '';
