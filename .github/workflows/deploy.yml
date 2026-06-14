@@ -1,8 +1,9 @@
 name: Deploy to Cloudflare
 
-# Auto-deploys the Worker + Durable Object to your Cloudflare account
-# every time you push to main. Requires one repo secret: CLOUDFLARE_API_TOKEN
-# (Settings ▸ Secrets and variables ▸ Actions). See README "Deploy" section.
+# Auto-deploys the Worker (+ Durable Objects + D1) to your Cloudflare account on
+# every push to main. Requires one repo secret: CLOUDFLARE_API_TOKEN
+# (Settings ▸ Secrets and variables ▸ Actions). See the README "Deploy" section.
+# Until that secret is set this workflow fails on auth — that's expected.
 
 on:
   push:
@@ -21,7 +22,10 @@ jobs:
 
       - run: npm install
 
-      - name: Deploy with Wrangler
-        uses: cloudflare/wrangler-action@v3
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      # Use the wrangler pinned in package.json (v4 reads wrangler.jsonc + the
+      # `main` entry-point and supports D1/DO migrations), authenticating with
+      # the repo's CLOUDFLARE_API_TOKEN secret.
+      - name: Deploy
+        run: npx wrangler deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
