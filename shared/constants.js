@@ -15,13 +15,13 @@ export const FRICTION = 0.94;           // velocity retained per tick (more glid
 export const SHIP_MAX_HP = 100;
 export const RESPAWN_MS = 2500;
 
-// Weapons — deliberate, high-impact missiles (not a rapid-fire machine gun).
-// The long cooldown is also what keeps the projectile count (and the lag) low.
-export const BULLET_SPEED = 850;        // px/s
-export const BULLET_TTL = 1.6;          // seconds → ~1360px range
-export const BULLET_RADIUS = 8;         // bigger projectile / hit area
+// Weapons — big, fast missiles on a slow trigger (not a rapid-fire machine gun).
+// The long cooldown also keeps the projectile count (and the lag) low.
+export const BULLET_SPEED = 1200;       // px/s — fast projectile
+export const BULLET_TTL = 1.2;          // seconds → ~1440px range
+export const BULLET_RADIUS = 12;        // bigger projectile / hit area
 export const BULLET_DAMAGE = 50;        // two missiles down a full-HP ship
-export const FIRE_COOLDOWN_MS = 800;    // ~1.25 launches/sec — one deliberate shot
+export const FIRE_COOLDOWN_MS = 1200;   // ~0.8 launches/sec — slow, deliberate trigger
 
 // Networking / interest management
 export const VIEW_RADIUS = 1500;        // detailed entities sent within range (wider for zoom-out)

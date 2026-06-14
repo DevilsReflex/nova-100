@@ -9,7 +9,7 @@ const CFG = {
   INPUT_RATE: 30,           // input packets / sec
   INTERP_DELAY: 100,        // ms we render other ships in the past
   ZOOM: 0.72,               // camera zoom-out (<1 shows more of the arena)
-  FIRE_COOLDOWN_MS: 800,    // mirrors server; drives muzzle flash + reload reticle
+  FIRE_COOLDOWN_MS: 1200,   // mirrors server; drives muzzle flash + reload reticle
 };
 
 // ---------- canvas ----------
@@ -25,16 +25,25 @@ function resize() {
 }
 addEventListener('resize', resize); resize();
 
-// ---------- starfield (parallax layers, generated once) ----------
-const STAR_LAYERS = [
-  { n: 220, depth: 0.3, size: 1.0, alpha: 0.5 },
-  { n: 160, depth: 0.6, size: 1.6, alpha: 0.7 },
-  { n: 90,  depth: 1.0, size: 2.2, alpha: 0.95 },
-];
-const stars = STAR_LAYERS.map(L => {
-  const arr = [];
-  for (let i = 0; i < L.n; i++) arr.push({ x: Math.random() * 2400, y: Math.random() * 2400 });
-  return { ...L, arr };
+// ---------- starfield ----------
+// Each parallax layer is pre-rendered once to a tile, then drawn as a repeating
+// pattern offset by parallax — a couple of fillRects per frame instead of the
+// thousands of per-star iterations the old loop did (the background's main cost).
+const STAR_TILE = 2048;
+const starLayers = [
+  { depth: 0.35, n: 170, size: 1.4, alpha: 0.55 },
+  { depth: 0.8,  n: 110, size: 2.2, alpha: 0.9 },
+].map(L => {
+  const tile = document.createElement('canvas');
+  tile.width = tile.height = STAR_TILE;
+  const tc = tile.getContext('2d');
+  tc.fillStyle = '#cfe8ff';
+  for (let i = 0; i < L.n; i++) {
+    tc.globalAlpha = L.alpha * (0.5 + Math.random() * 0.5);
+    const s = L.size * (0.7 + Math.random() * 0.7);
+    tc.fillRect(Math.random() * STAR_TILE, Math.random() * STAR_TILE, s, s);
+  }
+  return { depth: L.depth, tile, pattern: null };
 });
 
 // ---------- game state ----------
@@ -349,23 +358,16 @@ function lerpAngle(a, b, f) {
 }
 
 function drawStars(camX, camY) {
-  ctx.fillStyle = '#fff';
-  for (const L of stars) {
-    const ox = (camX * L.depth) % 2400, oy = (camY * L.depth) % 2400;
-    ctx.globalAlpha = L.alpha;
-    for (const st of L.arr) {
-      let sx = (st.x - ox); let sy = (st.y - oy);
-      sx = ((sx % 2400) + 2400) % 2400; sy = ((sy % 2400) + 2400) % 2400;
-      // tile across screen
-      for (let tx = -2400; tx < innerWidth + 2400; tx += 2400)
-        for (let ty = -2400; ty < innerHeight + 2400; ty += 2400) {
-          const px = sx + tx, py = sy + ty;
-          if (px < 0 || py < 0 || px > innerWidth || py > innerHeight) continue;
-          ctx.fillRect(px, py, L.size, L.size);
-        }
-    }
+  for (const L of starLayers) {
+    if (!L.pattern) L.pattern = ctx.createPattern(L.tile, 'repeat');
+    const ox = -((camX * L.depth) % STAR_TILE);
+    const oy = -((camY * L.depth) % STAR_TILE);
+    ctx.save();
+    ctx.translate(ox, oy);
+    ctx.fillStyle = L.pattern;
+    ctx.fillRect(-ox, -oy, innerWidth, innerHeight);
+    ctx.restore();
   }
-  ctx.globalAlpha = 1;
 }
 
 function drawBounds(w2s) {
@@ -452,29 +454,29 @@ function drawMissile(sx, sy, angle, color, Z) {
 
   // exhaust trail (additive)
   ctx.globalCompositeOperation = 'lighter';
-  const tg = ctx.createLinearGradient(-4, 0, -42, 0);
-  tg.addColorStop(0, hexA(color, 0.85));
-  tg.addColorStop(0.5, hexA(color, 0.22));
+  const tg = ctx.createLinearGradient(-6, 0, -60, 0);
+  tg.addColorStop(0, hexA(color, 0.9));
+  tg.addColorStop(0.5, hexA(color, 0.25));
   tg.addColorStop(1, hexA(color, 0));
   ctx.fillStyle = tg;
   ctx.beginPath();
-  ctx.moveTo(-2, 3.6); ctx.lineTo(-42, 0); ctx.lineTo(-2, -3.6); ctx.closePath(); ctx.fill();
+  ctx.moveTo(-3, 5.5); ctx.lineTo(-60, 0); ctx.lineTo(-3, -5.5); ctx.closePath(); ctx.fill();
   ctx.globalCompositeOperation = 'source-over';
 
   // fins
   ctx.fillStyle = color;
-  ctx.beginPath(); ctx.moveTo(-5, 3); ctx.lineTo(-9, 6); ctx.lineTo(-3, 3); ctx.closePath(); ctx.fill();
-  ctx.beginPath(); ctx.moveTo(-5, -3); ctx.lineTo(-9, -6); ctx.lineTo(-3, -3); ctx.closePath(); ctx.fill();
+  ctx.beginPath(); ctx.moveTo(-7, 4.5); ctx.lineTo(-13, 9); ctx.lineTo(-4, 4.5); ctx.closePath(); ctx.fill();
+  ctx.beginPath(); ctx.moveTo(-7, -4.5); ctx.lineTo(-13, -9); ctx.lineTo(-4, -4.5); ctx.closePath(); ctx.fill();
 
   // body
-  ctx.fillStyle = '#e9f4ff';
+  ctx.fillStyle = '#eaf4ff';
   ctx.beginPath();
-  ctx.moveTo(10, 0); ctx.lineTo(3, 4.5); ctx.lineTo(-7, 3); ctx.lineTo(-7, -3); ctx.lineTo(3, -4.5);
+  ctx.moveTo(16, 0); ctx.lineTo(5, 7); ctx.lineTo(-10, 4.5); ctx.lineTo(-10, -4.5); ctx.lineTo(5, -7);
   ctx.closePath(); ctx.fill();
 
   // hot warhead tip
   ctx.fillStyle = '#fff';
-  ctx.beginPath(); ctx.arc(7, 0, 2, 0, Math.PI * 2); ctx.fill();
+  ctx.beginPath(); ctx.arc(11, 0, 3, 0, Math.PI * 2); ctx.fill();
   ctx.restore();
 }
 
@@ -488,7 +490,7 @@ function drawNebula() {
     nebBuf.width = innerWidth; nebBuf.height = innerHeight; nebCountdown = 0;
   }
   if (nebCountdown-- <= 0) {
-    nebCountdown = 6;
+    nebCountdown = 10;
     nebulaT += 0.01;
     const g = nebCtx.createRadialGradient(
       innerWidth * 0.5, innerHeight * 0.4, 60,

@@ -108,20 +108,21 @@ export class Game {
       }
     }
 
-    // --- integrate bullets ---
+    // --- integrate bullets (remember the pre-move point for swept collision) ---
     for (const b of this.bullets) {
+      b.px = b.x; b.py = b.y;
       b.x += b.vx * DT; b.y += b.vy * DT;
       b.ttl -= DT;
     }
 
-    // --- bullet vs ship collisions ---
+    // --- bullet vs ship collisions (swept: test the whole step segment so a
+    //     fast/large missile can't tunnel through a ship between ticks) ---
+    const rr = SHIP_RADIUS + BULLET_RADIUS;
     for (const b of this.bullets) {
       if (b.ttl <= 0) continue;
       for (const s of this.ships.values()) {
         if (!s.alive || s.id === b.owner) continue;
-        const dx = s.x - b.x, dy = s.y - b.y;
-        const rr = SHIP_RADIUS + BULLET_RADIUS;
-        if (dx * dx + dy * dy <= rr * rr) {
+        if (segDistSq(b.px, b.py, b.x, b.y, s.x, s.y) <= rr * rr) {
           b.ttl = 0;
           s.hp -= BULLET_DAMAGE;
           this.events.push({ t: 'hit', x: b.x, y: b.y });
@@ -161,4 +162,14 @@ export class Game {
       killer: killer ? killer.name : '???', victim: victim.name,
     });
   }
+}
+
+// squared distance from point (cx,cy) to segment (x1,y1)-(x2,y2)
+function segDistSq(x1, y1, x2, y2, cx, cy) {
+  const dx = x2 - x1, dy = y2 - y1;
+  const len2 = dx * dx + dy * dy;
+  let t = len2 > 0 ? ((cx - x1) * dx + (cy - y1) * dy) / len2 : 0;
+  t = t < 0 ? 0 : t > 1 ? 1 : t;
+  const ex = cx - (x1 + dx * t), ey = cy - (y1 + dy * t);
+  return ex * ex + ey * ey;
 }
