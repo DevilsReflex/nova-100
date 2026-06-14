@@ -172,7 +172,7 @@ setInterval(() => {
     const board = leaderboard(game);
     const allShips = [];
     for (const s of game.ships.values()) {
-      allShips.push([s.id, Math.round(s.x), Math.round(s.y), +s.angle.toFixed(2), s.isBot ? 1 : 0]);
+      allShips.push([s.id, Math.round(s.x), Math.round(s.y), +s.angle.toFixed(2), s.isBot ? 1 : 0, s.alive ? 1 : 0]);
     }
     const shipsJson = JSON.stringify(allShips);
     const boardJson = JSON.stringify(board);
@@ -208,6 +208,7 @@ setInterval(() => {
       const meJson = JSON.stringify({
         x: me.x, y: me.y, vx: me.vx, vy: me.vy, seq: me.lastSeq,
         score: me.score, cargo: me.cargo,
+        alive: me.alive, respawnIn: me.alive ? 0 : Math.max(0, me.respawnAt - now),
       });
       ws.send('{"t":"snap","now":' + now + ',"me":' + meJson +
         ',"ships":' + shipsJson + ',"bullets":' + JSON.stringify(bullets) +

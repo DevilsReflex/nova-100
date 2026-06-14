@@ -154,7 +154,7 @@ export class GameRoom {
     // ship roster — everyone gets all ships (minimap + render): [id,x,y,angle,bot]
     const allShips = [];
     for (const s of this.game.ships.values()) {
-      allShips.push([s.id, Math.round(s.x), Math.round(s.y), +s.angle.toFixed(2), s.isBot ? 1 : 0]);
+      allShips.push([s.id, Math.round(s.x), Math.round(s.y), +s.angle.toFixed(2), s.isBot ? 1 : 0, s.alive ? 1 : 0]);
     }
     // serialize the parts identical for every client ONCE (roster + board)
     const shipsJson = JSON.stringify(allShips);
@@ -195,6 +195,7 @@ export class GameRoom {
       const meJson = JSON.stringify({
         x: me.x, y: me.y, vx: me.vx, vy: me.vy, seq: me.lastSeq,
         score: me.score, cargo: me.cargo,
+        alive: me.alive, respawnIn: me.alive ? 0 : Math.max(0, me.respawnAt - now),
       });
       const msg = '{"t":"snap","now":' + now + ',"me":' + meJson +
         ',"ships":' + shipsJson + ',"bullets":' + JSON.stringify(bullets) +

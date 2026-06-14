@@ -3,7 +3,7 @@
 // burst out by flying over them. Holds all ships, bullets, asteroids ("rocks")
 // and material drops; steps physics; resolves mining + collection.
 import {
-  WORLD, DT, SHIP_RADIUS, ACCEL, MAX_SPEED, FRICTION, CHARGE_MS,
+  WORLD, DT, SHIP_RADIUS, ACCEL, MAX_SPEED, FRICTION, CHARGE_MS, RESPAWN_MS,
   BULLET_SPEED, BULLET_TTL, BULLET_RADIUS, BULLET_DAMAGE,
   TYPES, ASTEROID_COUNT, ASTEROID_R_MIN, ASTEROID_R_MAX, ASTEROID_SPLIT_MIN_R,
   ASTEROID_DRIFT, ASTEROID_HP_K,
@@ -36,11 +36,18 @@ export class Ship {
     this.charge = 0;                // ms the fire button has been held
     this.input = { mx: 0, my: 0, aim: 0, shoot: false, seq: 0 };
     this.lastSeq = 0;
+    this.respawnAt = 0;             // 0 = alive; else timestamp to respawn at
+    this.spawn();
+  }
+  spawn() {
     this.x = Math.random() * WORLD.w;
     this.y = Math.random() * WORLD.h;
     this.vx = 0; this.vy = 0;
     this.angle = Math.random() * Math.PI * 2;
+    this.charge = 0;
+    this.respawnAt = 0;
   }
+  get alive() { return this.respawnAt === 0; }
 }
 
 export class Game {
@@ -104,12 +111,13 @@ export class Game {
   step(now) {
     this.events.length = 0;
 
-    // --- ships: movement + charge fire ---
-    // This MUST stay identical to the client's stepLocal() so prediction is
-    // exact. Ships intentionally pass THROUGH asteroids — any server-only
-    // position nudge the client can't predict (e.g. a collision bounce) shows up
-    // as constant movement jitter.
+    // --- ships: movement + charge fire + meteor collision ---
+    // The movement integration MUST stay byte-for-byte identical to the client's
+    // stepLocal() so prediction is exact (no jitter). Touching an asteroid
+    // destroys the ship — a discrete event the client reconciles cleanly, not a
+    // per-tick position nudge.
     for (const s of this.ships.values()) {
+      if (!s.alive) { if (now >= s.respawnAt) s.spawn(); continue; }
       const inp = s.input;
       s.vx += inp.mx * ACCEL * DT;
       s.vy += inp.my * ACCEL * DT;
@@ -125,6 +133,16 @@ export class Game {
         s.charge += DT * 1000;
         if (s.charge >= CHARGE_MS) { this.fire(s); s.charge = 0; }
       } else s.charge = 0;
+
+      // hit an asteroid → explode, respawn after RESPAWN_MS
+      for (const r of this.rocks.values()) {
+        const dx = s.x - r.x, dy = s.y - r.y, rr = SHIP_RADIUS + r.radius;
+        if (dx * dx + dy * dy <= rr * rr) {
+          this.events.push({ t: 'ship', x: s.x, y: s.y });
+          s.respawnAt = now + RESPAWN_MS; s.vx = 0; s.vy = 0; s.charge = 0;
+          break;
+        }
+      }
     }
 
     // --- asteroids drift + bounce off arena walls ---
@@ -163,6 +181,7 @@ export class Game {
       mat.ttl -= DT;
       let near = null, best = MAGNET_RADIUS * MAGNET_RADIUS;
       for (const s of this.ships.values()) {
+        if (!s.alive) continue;
         const dx = s.x - mat.x, dy = s.y - mat.y, d2 = dx * dx + dy * dy;
         if (d2 < best) { best = d2; near = s; }
       }

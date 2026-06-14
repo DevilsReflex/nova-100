@@ -44,6 +44,7 @@ let ws = null, myId = 0;
 let myName = 'Pilot';
 const me = { x: CFG.WORLD.w / 2, y: CFG.WORLD.h / 2, vx: 0, vy: 0 };
 let score = 0, prevScore = 0, cargo = {}, playerCount = 0, rockTotal = 0;
+let alive = true, respawnIn = 0;
 
 const ships = new Map();   // id -> { buf: [{t,x,y,angle,bot}, …] } interpolation history
 let board = [];
@@ -66,7 +67,7 @@ function rockShape(id) {
     const verts = [];
     for (let i = 0; i < n; i++) verts.push(0.74 + rnd() * 0.34);
     s = { verts, spin: rnd() * Math.PI * 2, rate: (rnd() - 0.5) * 0.5 };
-    if (rockShapes.size > 800) rockShapes.clear();
+    if (rockShapes.size > 1500) rockShapes.delete(rockShapes.keys().next().value);  // evict oldest, never clear()
     rockShapes.set(id, s);
   }
   return s;
@@ -135,24 +136,25 @@ function applySnapshot(s) {
   playerCount = s.players; rockTotal = s.rockTotal; board = s.board;
   const m = s.me;
   prevScore = score; score = m.score; cargo = m.cargo || {};
+  alive = m.alive !== false; respawnIn = m.respawnIn || 0;
   if (score > prevScore && joined) {
     floats.push({ x: me.x, y: me.y - 26, life: 1, text: '+' + (score - prevScore), color: '#ffe08a' });
     if (floats.length > 24) floats.shift();
   }
 
-  // reconcile own ship: snap to server, replay unacked inputs
+  // reconcile own ship: snap to server, replay unacked inputs (only while alive)
   me.x = m.x; me.y = m.y; me.vx = m.vx; me.vy = m.vy;
   while (inputHistory.length && inputHistory[0].seq <= m.seq) inputHistory.shift();
-  for (const cmd of inputHistory) stepLocal(me, cmd.mx, cmd.my);
+  if (alive) for (const cmd of inputHistory) stepLocal(me, cmd.mx, cmd.my);
 
   const now = performance.now();
   // other ships → interpolation history buffer
   const seen = new Set();
   for (const arr of s.ships) {
-    const [id, x, y, angle, bot] = arr;
+    const [id, x, y, angle, bot, alv] = arr;
     seen.add(id);
     if (id === myId) continue;
-    const sample = { t: now, x, y, angle, bot };
+    const sample = { t: now, x, y, angle, bot, alive: alv };
     const e = ships.get(id);
     if (!e) ships.set(id, { buf: [sample] });
     else {
@@ -180,6 +182,11 @@ function applySnapshot(s) {
       const col = (TYPES[c] || TYPES[0]).color;
       pushParticles(x, y, 8, 90, 0.4, [col, '#ffffff'], 1.6);
       spawnRing(x, y, col, 3, 30, 0.3);
+    } else if (t === 'ship') {
+      pushParticles(x, y, 30, 260, 1.0, ['#ff6b6b', '#ffd166', '#ffffff'], 3);
+      spawnRing(x, y, '#ff8a5a', 6, 130, 0.6);
+      const d = Math.hypot(x - me.x, y - me.y);
+      if (d < 600) { shake = Math.min(30, shake + (1 - d / 600) * 22); flash = Math.min(0.5, flash + (1 - d / 600) * 0.4); }
     } else {
       pushParticles(x, y, 6, 90, 0.3, ['#bfe9ff', '#ffffff'], 1.5);  // hit
     }
@@ -205,16 +212,17 @@ function startInputLoop() {
     const aim = aimAngle();
     const shoot = shooting();
     inputSeq++;
-    stepLocal(me, mx, my);
-    inputHistory.push({ seq: inputSeq, mx, my });
-    if (inputHistory.length > 120) inputHistory.shift();
-    // hold-to-charge feedback (server owns the actual launch)
-    const t = performance.now();
-    if (shoot) {
-      if (!chargeStart) chargeStart = t;
-      if (t - chargeStart >= CFG.CHARGE_MS) { chargeStart = t; muzzle = 1; shake = Math.min(22, shake + 7); }
+    if (alive) {
+      stepLocal(me, mx, my);                       // predict only while alive
+      inputHistory.push({ seq: inputSeq, mx, my });
+      if (inputHistory.length > 120) inputHistory.shift();
+      const t = performance.now();
+      if (shoot) {
+        if (!chargeStart) chargeStart = t;
+        if (t - chargeStart >= CFG.CHARGE_MS) { chargeStart = t; muzzle = 1; shake = Math.min(22, shake + 7); }
+      } else chargeStart = 0;
     } else chargeStart = 0;
-    ws.send(JSON.stringify({ t: 'input', seq: inputSeq, mx, my, aim, shoot }));
+    ws.send(JSON.stringify({ t: 'input', seq: inputSeq, mx, my, aim, shoot: alive && shoot }));
   }, 1000 / CFG.INPUT_RATE);
 }
 
@@ -228,7 +236,7 @@ function pushParticles(x, y, n, spd, life, colors, rad) {
       color: colors[(Math.random() * colors.length) | 0], r: rad * (0.6 + Math.random() * 0.8),
     });
   }
-  if (fxList.length > 600) fxList.splice(0, fxList.length - 600);
+  if (fxList.length > 400) fxList.splice(0, fxList.length - 400);
 }
 function spawnRing(x, y, color, r0, r1, max) {
   rings.push({ x, y, color, r0, r1, t: 0, max });
@@ -258,15 +266,17 @@ function render(now) {
   const shX = (Math.random() - 0.5) * shake, shY = (Math.random() - 0.5) * shake;
   const camX = me.x, camY = me.y;
   const cx = innerWidth / 2 + shX, cy = innerHeight / 2 + shY;
-  const w2s = (wx, wy) => [(wx - camX) * Z + cx, (wy - camY) * Z + cy];
+  // world→screen is inlined at every call site (sx=(wx-camX)*Z+cx) to avoid
+  // allocating a throwaway array per entity per frame — that GC churn was the
+  // source of the micro-freezes when lots of entities stream into view.
 
-  drawBounds(w2s);
+  drawBounds(camX, camY, cx, cy, Z);
 
   // asteroids (extrapolated along drift)
   const rAge = Math.min(0.2, (now - rocksAt) / 1000);
   for (const r of rocks) {
     const [id, rx, ry, type, radius, hpPct, vx, vy] = r;
-    const [sx, sy] = w2s(rx + vx * rAge, ry + vy * rAge);
+    const sx = (rx + vx * rAge - camX) * Z + cx, sy = (ry + vy * rAge - camY) * Z + cy;
     const screenR = radius * Z;
     if (sx < -screenR - 30 || sy < -screenR - 30 || sx > innerWidth + screenR + 30 || sy > innerHeight + screenR + 30) continue;
     drawRock(sx, sy, type, radius, hpPct, id, now, Z);
@@ -276,7 +286,7 @@ function render(now) {
   const mAge = Math.min(0.2, (now - matsAt) / 1000);
   for (const m of mats) {
     const [mx, my, type, vx, vy] = m;
-    const [sx, sy] = w2s(mx + vx * mAge, my + vy * mAge);
+    const sx = (mx + vx * mAge - camX) * Z + cx, sy = (my + vy * mAge - camY) * Z + cy;
     if (sx < -30 || sy < -30 || sx > innerWidth + 30 || sy > innerHeight + 30) continue;
     drawMat(sx, sy, type, Z, now + sx);
   }
@@ -285,7 +295,7 @@ function render(now) {
   const bAge = Math.min(0.2, (now - bulletsAt) / 1000);
   for (const b of bullets) {
     const [bx, by, color, vx, vy] = b;
-    const [sx, sy] = w2s(bx + vx * bAge, by + vy * bAge);
+    const sx = (bx + vx * bAge - camX) * Z + cx, sy = (by + vy * bAge - camY) * Z + cy;
     if (sx < -60 || sy < -60 || sx > innerWidth + 60 || sy > innerHeight + 60) continue;
     drawMissile(sx, sy, Math.atan2(vy, vx), color, Z);
   }
@@ -294,13 +304,14 @@ function render(now) {
   const renderTime = now - CFG.INTERP_DELAY;
   for (const [id, e] of ships) {
     const p = sampleAt(e, renderTime);
-    const [sx, sy] = w2s(p.x, p.y);
+    if (p.alive === 0) continue;                 // destroyed ship — gone (explosion via fx)
+    const sx = (p.x - camX) * Z + cx, sy = (p.y - camY) * Z + cy;
     if (sx < -50 || sy < -50 || sx > innerWidth + 50 || sy > innerHeight + 50) continue;
     drawShip(sx, sy, p.angle, shipColor(id), false, p.moving, Z);
   }
 
-  // self (predicted)
-  {
+  // self (predicted) — hidden while waiting to respawn
+  if (alive) {
     const { mx, my } = inputVector();
     drawShip(cx, cy, aimAngle(), '#5ad1ff', true, (mx || my) !== 0, Z);
   }
@@ -311,7 +322,7 @@ function render(now) {
     f.life -= dt / f.max;
     if (f.life <= 0) { fxList.splice(i, 1); continue; }
     f.x += f.vx * dt; f.y += f.vy * dt; f.vx *= 0.96; f.vy *= 0.96;
-    const [sx, sy] = w2s(f.x, f.y);
+    const sx = (f.x - camX) * Z + cx, sy = (f.y - camY) * Z + cy;
     ctx.globalAlpha = Math.max(0, f.life);
     ctx.fillStyle = f.color;
     ctx.beginPath(); ctx.arc(sx, sy, f.r * Z, 0, Math.PI * 2); ctx.fill();
@@ -325,7 +336,7 @@ function render(now) {
     r.t += dt / r.max;
     if (r.t >= 1) { rings.splice(i, 1); continue; }
     const e = 1 - (1 - r.t) * (1 - r.t);
-    const [sx, sy] = w2s(r.x, r.y);
+    const sx = (r.x - camX) * Z + cx, sy = (r.y - camY) * Z + cy;
     ctx.globalAlpha = (1 - r.t) * 0.8;
     ctx.strokeStyle = r.color;
     ctx.lineWidth = (1 + (1 - r.t) * 2.5) * Z;
@@ -340,7 +351,7 @@ function render(now) {
     const f = floats[i];
     f.life -= dt / 1.1; f.y -= 34 * dt;
     if (f.life <= 0) { floats.splice(i, 1); continue; }
-    const [sx, sy] = w2s(f.x, f.y);
+    const sx = (f.x - camX) * Z + cx, sy = (f.y - camY) * Z + cy;
     ctx.globalAlpha = Math.max(0, Math.min(1, f.life * 1.4));
     ctx.fillStyle = f.color;
     ctx.fillText(f.text, sx, sy);
@@ -348,7 +359,16 @@ function render(now) {
   ctx.globalAlpha = 1; ctx.textAlign = 'left';
 
   if (flash > 0) { ctx.fillStyle = `rgba(255,240,210,${flash})`; ctx.fillRect(0, 0, innerWidth, innerHeight); }
-  if (joined) drawReticle(now);
+  if (joined && alive) drawReticle(now);
+  if (joined && !alive) {
+    ctx.fillStyle = 'rgba(120,20,30,0.28)'; ctx.fillRect(0, 0, innerWidth, innerHeight);
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#ff7a7a'; ctx.font = '800 34px system-ui, sans-serif';
+    ctx.fillText('SHIP DESTROYED', innerWidth / 2, innerHeight / 2 - 8);
+    ctx.fillStyle = '#e8f0ff'; ctx.font = '600 16px system-ui, sans-serif';
+    ctx.fillText('Respawning in ' + Math.ceil(respawnIn / 1000) + 's…', innerWidth / 2, innerHeight / 2 + 24);
+    ctx.textAlign = 'left';
+  }
   drawMinimap();
   drawHUD();
   requestAnimationFrame(render);
@@ -367,7 +387,7 @@ function sampleAt(e, t) {
     x: a.x + (b.x - a.x) * f,
     y: a.y + (b.y - a.y) * f,
     angle: lerpAngle(a.angle, b.angle, f),
-    bot: b.bot,
+    bot: b.bot, alive: b.alive,
     moving: Math.hypot(b.x - a.x, b.y - a.y) > 1.5,
   };
 }
@@ -378,9 +398,9 @@ function lerpAngle(a, b, f) {
   return a + d * f;
 }
 
-function drawBounds(w2s) {
-  const [x0, y0] = w2s(0, 0);
-  const [x1, y1] = w2s(CFG.WORLD.w, CFG.WORLD.h);
+function drawBounds(camX, camY, cx, cy, Z) {
+  const x0 = (0 - camX) * Z + cx, y0 = (0 - camY) * Z + cy;
+  const x1 = (CFG.WORLD.w - camX) * Z + cx, y1 = (CFG.WORLD.h - camY) * Z + cy;
   ctx.strokeStyle = 'rgba(90,209,255,.28)'; ctx.lineWidth = 2;
   ctx.strokeRect(x0, y0, x1 - x0, y1 - y0);
 }
@@ -536,6 +556,7 @@ function drawMinimap() {
   for (const r of rocks) ctx.fillRect(x0 + r[1] * sx - 1, y0 + r[2] * sy - 1, 1.5, 1.5);
   for (const [id, e] of ships) {
     const p = e.buf[e.buf.length - 1];
+    if (p.alive === 0) continue;
     ctx.fillStyle = p.bot ? 'rgba(159,179,200,.7)' : '#ffd166';
     ctx.fillRect(x0 + p.x * sx - 1, y0 + p.y * sy - 1, 2, 2);
   }

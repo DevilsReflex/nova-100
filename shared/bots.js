@@ -22,7 +22,7 @@ const RETARGET_TICKS = 8;
 export function thinkBots(game) {
   botSeq++;
   for (const s of game.ships.values()) {
-    if (!s.isBot) continue;
+    if (!s.isBot || !s.alive) continue;
 
     // 1) a material drop nearby? go scoop it.
     let mat = null, mbest = (BOT_VIEW * 0.6) * (BOT_VIEW * 0.6);

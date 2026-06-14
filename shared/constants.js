@@ -12,6 +12,7 @@ export const SHIP_RADIUS = 16;
 export const ACCEL = 1000;              // px/s^2
 export const MAX_SPEED = 560;           // px/s
 export const FRICTION = 0.94;           // velocity retained per tick
+export const RESPAWN_MS = 5000;         // a ship destroyed by a meteor respawns after this
 
 // Mining cannon — big, fast slug on a hold-to-charge trigger
 export const BULLET_SPEED = 1200;       // px/s
