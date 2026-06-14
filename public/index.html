@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+<title>Nova 100 — Multiplayer Space Shooter</title>
+<style>
+  :root { --accent:#5ad1ff; --bg:#05070f; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; overflow: hidden; background: var(--bg);
+    font-family: 'Segoe UI', system-ui, sans-serif; color: #e8f0ff; }
+  #game { display: block; position: fixed; inset: 0; cursor: crosshair; }
+
+  /* ---- HUD ---- */
+  .hud { position: fixed; pointer-events: none; z-index: 5;
+    text-shadow: 0 1px 3px rgba(0,0,0,.8); }
+  #stats { top: 14px; left: 16px; font-size: 14px; line-height: 1.5; }
+  #stats b { color: var(--accent); }
+  #board { top: 14px; right: 16px; width: 220px; background: rgba(8,14,28,.55);
+    border: 1px solid rgba(90,209,255,.25); border-radius: 10px; padding: 10px 12px;
+    font-size: 13px; backdrop-filter: blur(4px); }
+  #board h3 { font-size: 12px; letter-spacing: 1.5px; text-transform: uppercase;
+    color: var(--accent); margin-bottom: 6px; }
+  #board .row { display: flex; justify-content: space-between; padding: 1px 0;
+    white-space: nowrap; }
+  #board .row.me { color: #ffd166; font-weight: 600; }
+  #board .bot { opacity: .65; }
+  #feed { bottom: 16px; right: 16px; width: 280px; text-align: right;
+    font-size: 13px; }
+  #feed div { opacity: 0; animation: fade 5s forwards; }
+  @keyframes fade { 0%{opacity:0;transform:translateX(10px)} 8%{opacity:1;transform:none}
+    80%{opacity:1} 100%{opacity:0} }
+  #feed .k { color: #06d6a0; } #feed .v { color: #ff6b6b; }
+
+  /* health bar */
+  #hpwrap { bottom: 16px; left: 16px; width: 280px; }
+  #hpbar { height: 14px; background: rgba(255,255,255,.12); border-radius: 7px;
+    overflow: hidden; border: 1px solid rgba(255,255,255,.2); }
+  #hpfill { height: 100%; width: 100%; background: linear-gradient(90deg,#06d6a0,#5ad1ff);
+    transition: width .12s linear; }
+  #hpwrap .label { font-size: 11px; letter-spacing: 2px; margin-bottom: 4px;
+    text-transform: uppercase; opacity: .8; }
+
+  /* respawn / death overlay */
+  #death { position: fixed; inset: 0; display: none; place-items: center; z-index: 8;
+    background: radial-gradient(circle, rgba(255,40,60,.12), rgba(0,0,0,.55)); }
+  #death .box { text-align: center; }
+  #death h2 { font-size: 32px; letter-spacing: 3px; color: #ff6b6b; }
+  #death p { margin-top: 8px; opacity: .85; }
+
+  /* start screen */
+  #start { position: fixed; inset: 0; display: grid; place-items: center; z-index: 20;
+    background: radial-gradient(circle at 50% 35%, #0c1430, #03050c 70%); }
+  #start .panel { width: min(440px, 90vw); text-align: center; padding: 36px 32px;
+    background: rgba(10,16,34,.7); border: 1px solid rgba(90,209,255,.3);
+    border-radius: 18px; box-shadow: 0 20px 60px rgba(0,0,0,.6); }
+  #start h1 { font-size: 44px; letter-spacing: 6px; font-weight: 800;
+    background: linear-gradient(90deg,#5ad1ff,#c77dff); -webkit-background-clip: text;
+    background-clip: text; color: transparent; }
+  #start .sub { opacity: .7; margin: 6px 0 24px; font-size: 14px; letter-spacing: 1px; }
+  #start input { width: 100%; padding: 13px 16px; font-size: 16px; border-radius: 10px;
+    border: 1px solid rgba(90,209,255,.35); background: rgba(0,0,0,.35); color: #fff;
+    outline: none; text-align: center; }
+  #start input:focus { border-color: var(--accent); }
+  #start button { margin-top: 16px; width: 100%; padding: 14px; font-size: 16px;
+    font-weight: 700; letter-spacing: 2px; border: none; border-radius: 10px;
+    cursor: pointer; color: #03050c; background: linear-gradient(90deg,#5ad1ff,#06d6a0); }
+  #start button:hover { filter: brightness(1.08); }
+  #start .controls { margin-top: 22px; font-size: 12.5px; opacity: .65; line-height: 1.7; }
+  #start .controls kbd { background: rgba(255,255,255,.12); border-radius: 4px;
+    padding: 1px 6px; font-family: inherit; }
+  #status { margin-top: 12px; font-size: 12px; min-height: 16px; color: #ffd166; }
+</style>
+</head>
+<body>
+  <canvas id="game"></canvas>
+
+  <div id="stats" class="hud"></div>
+  <div id="board" class="hud"><h3>Leaderboard</h3><div id="boardRows"></div></div>
+  <div id="feed" class="hud"></div>
+  <div id="hpwrap" class="hud">
+    <div class="label">Hull</div>
+    <div id="hpbar"><div id="hpfill"></div></div>
+  </div>
+
+  <div id="death"><div class="box">
+    <h2>SHIP DESTROYED</h2>
+    <p>Respawning in <span id="respawnT">2.5</span>s…</p>
+  </div></div>
+
+  <div id="start">
+    <div class="panel">
+      <h1>NOVA&nbsp;100</h1>
+      <div class="sub">100-PLAYER FREE-FOR-ALL · LAST GUNS BLAZING</div>
+      <input id="name" maxlength="16" placeholder="Call sign" autocomplete="off" />
+      <button id="play">LAUNCH</button>
+      <div id="status"></div>
+      <div class="controls">
+        <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> thrust &nbsp;·&nbsp;
+        <kbd>Mouse</kbd> aim &nbsp;·&nbsp; <kbd>Click</kbd>/<kbd>Space</kbd> fire
+      </div>
+    </div>
+  </div>
+
+  <script src="game.js"></script>
+</body>
+</html>

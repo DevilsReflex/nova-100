@@ -1,0 +1,27 @@
+name: Deploy to Cloudflare
+
+# Auto-deploys the Worker + Durable Object to your Cloudflare account
+# every time you push to main. Requires one repo secret: CLOUDFLARE_API_TOKEN
+# (Settings ▸ Secrets and variables ▸ Actions). See README "Deploy" section.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - run: npm install
+
+      - name: Deploy with Wrangler
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}

@@ -1,0 +1,24 @@
+{
+  // Cloudflare Workers config for Nova 100.
+  // Deploy with:  npx wrangler deploy
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "nova-100",
+  "main": "src/worker.js",
+  "compatibility_date": "2025-05-01",
+
+  // serve the browser client (public/) as static assets
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS"
+  },
+
+  // each live arena is a GameRoom Durable Object; the Lobby DO matchmakes
+  // players into rooms and opens new rooms when one fills with 100 humans
+  "durable_objects": {
+    "bindings": [
+      { "name": "GAME_ROOM", "class_name": "GameRoom" },
+      { "name": "LOBBY", "class_name": "Lobby" }
+    ]
+  },
+
+  // SQLite-backed Durable Objects are availab
