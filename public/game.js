@@ -16,35 +16,14 @@ const CFG = {
 const cv = document.getElementById('game');
 const ctx = cv.getContext('2d');
 let DPR = Math.min(window.devicePixelRatio || 1, 1.5);   // cap fill-rate on hi-DPI displays
-let vign = null;                                         // cached vignette gradient (rebuilt on resize)
 function resize() {
   DPR = Math.min(window.devicePixelRatio || 1, 1.5);
   cv.width = innerWidth * DPR; cv.height = innerHeight * DPR;
   cv.style.width = innerWidth + 'px'; cv.style.height = innerHeight + 'px';
-  vign = null;
 }
 addEventListener('resize', resize); resize();
 
-// ---------- starfield ----------
-// Each parallax layer is pre-rendered once to a tile, then drawn as a repeating
-// pattern offset by parallax — a couple of fillRects per frame instead of the
-// thousands of per-star iterations the old loop did (the background's main cost).
-const STAR_TILE = 2048;
-const starLayers = [
-  { depth: 0.35, n: 170, size: 1.4, alpha: 0.55 },
-  { depth: 0.8,  n: 110, size: 2.2, alpha: 0.9 },
-].map(L => {
-  const tile = document.createElement('canvas');
-  tile.width = tile.height = STAR_TILE;
-  const tc = tile.getContext('2d');
-  tc.fillStyle = '#cfe8ff';
-  for (let i = 0; i < L.n; i++) {
-    tc.globalAlpha = L.alpha * (0.5 + Math.random() * 0.5);
-    const s = L.size * (0.7 + Math.random() * 0.7);
-    tc.fillRect(Math.random() * STAR_TILE, Math.random() * STAR_TILE, s, s);
-  }
-  return { depth: L.depth, tile, pattern: null };
-});
+// Background is solid black with no animation (most performant possible).
 
 // ---------- game state ----------
 let ws = null, myId = 0;
@@ -258,7 +237,8 @@ function render(now) {
   const Z = CFG.ZOOM;
 
   ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
-  ctx.clearRect(0, 0, innerWidth, innerHeight);
+  ctx.fillStyle = '#000';                              // solid black, no animation
+  ctx.fillRect(0, 0, innerWidth, innerHeight);
 
   // decay transient feedback
   shake *= 0.86; if (shake < 0.3) shake = 0;
@@ -270,9 +250,6 @@ function render(now) {
   const cx = innerWidth / 2 + shX, cy = innerHeight / 2 + shY;
   const w2s = (wx, wy) => [(wx - camX) * Z + cx, (wy - camY) * Z + cy];
 
-  drawNebula();
-  drawStars(camX, camY);
-  drawGrid(camX, camY, cx, cy, Z);
   drawBounds(w2s);
 
   // missiles (few, so we can afford oriented bodies + glowing trails)
@@ -330,7 +307,6 @@ function render(now) {
   ctx.globalAlpha = 1;
   ctx.globalCompositeOperation = 'source-over';
 
-  drawVignette();
   if (flash > 0) { ctx.fillStyle = `rgba(255,240,210,${flash})`; ctx.fillRect(0, 0, innerWidth, innerHeight); }
   if (joined && me.alive) drawReticle(now);
   drawMinimap();
@@ -355,19 +331,6 @@ function lerpAngle(a, b, f) {
   while (d > Math.PI) d -= Math.PI * 2;
   while (d < -Math.PI) d += Math.PI * 2;
   return a + d * f;
-}
-
-function drawStars(camX, camY) {
-  for (const L of starLayers) {
-    if (!L.pattern) L.pattern = ctx.createPattern(L.tile, 'repeat');
-    const ox = -((camX * L.depth) % STAR_TILE);
-    const oy = -((camY * L.depth) % STAR_TILE);
-    ctx.save();
-    ctx.translate(ox, oy);
-    ctx.fillStyle = L.pattern;
-    ctx.fillRect(-ox, -oy, innerWidth, innerHeight);
-    ctx.restore();
-  }
 }
 
 function drawBounds(w2s) {
@@ -480,69 +443,9 @@ function drawMissile(sx, sy, angle, color, Z) {
   ctx.restore();
 }
 
-// soft drifting nebula — rendered to an offscreen buffer every few frames and
-// then blitted; four full-screen gradient fills *every* frame was wasteful.
-const nebBuf = document.createElement('canvas');
-const nebCtx = nebBuf.getContext('2d');
-let nebulaT = 0, nebCountdown = 0;
-function drawNebula() {
-  if (nebBuf.width !== innerWidth || nebBuf.height !== innerHeight) {
-    nebBuf.width = innerWidth; nebBuf.height = innerHeight; nebCountdown = 0;
-  }
-  if (nebCountdown-- <= 0) {
-    nebCountdown = 10;
-    nebulaT += 0.01;
-    const g = nebCtx.createRadialGradient(
-      innerWidth * 0.5, innerHeight * 0.4, 60,
-      innerWidth * 0.5, innerHeight * 0.5, Math.max(innerWidth, innerHeight));
-    g.addColorStop(0, '#0a1330'); g.addColorStop(1, '#03040a');
-    nebCtx.fillStyle = g; nebCtx.fillRect(0, 0, innerWidth, innerHeight);
-
-    const blobs = [['#3a1d6e', 0.18], ['#0d4a6b', 0.16], ['#5a1d4e', 0.14]];
-    nebCtx.globalCompositeOperation = 'lighter';
-    blobs.forEach(([c, a], i) => {
-      const px = innerWidth * (0.3 + 0.4 * Math.sin(nebulaT + i * 2.1));
-      const py = innerHeight * (0.35 + 0.3 * Math.cos(nebulaT * 0.8 + i));
-      const r = Math.max(innerWidth, innerHeight) * 0.45;
-      const rg = nebCtx.createRadialGradient(px, py, 0, px, py, r);
-      rg.addColorStop(0, hexA(c, a)); rg.addColorStop(1, hexA(c, 0));
-      nebCtx.fillStyle = rg; nebCtx.fillRect(0, 0, innerWidth, innerHeight);
-    });
-    nebCtx.globalCompositeOperation = 'source-over';
-  }
-  ctx.drawImage(nebBuf, 0, 0);
-}
 function hexA(hex, a) {
   const n = parseInt(hex.slice(1), 16);
   return `rgba(${n >> 16 & 255},${n >> 8 & 255},${n & 255},${a})`;
-}
-
-// faint world-space grid for motion/depth cues (zoom-aware)
-function drawGrid(camX, camY, cx, cy, Z) {
-  const step = 300;
-  ctx.strokeStyle = 'rgba(90,209,255,.05)'; ctx.lineWidth = 1;
-  ctx.beginPath();
-  const halfW = innerWidth / 2 / Z, halfH = innerHeight / 2 / Z;
-  for (let wx = Math.floor((camX - halfW) / step) * step; wx <= camX + halfW; wx += step) {
-    const sx = (wx - camX) * Z + cx;
-    ctx.moveTo(sx, 0); ctx.lineTo(sx, innerHeight);
-  }
-  for (let wy = Math.floor((camY - halfH) / step) * step; wy <= camY + halfH; wy += step) {
-    const sy = (wy - camY) * Z + cy;
-    ctx.moveTo(0, sy); ctx.lineTo(innerWidth, sy);
-  }
-  ctx.stroke();
-}
-
-// vignette — the gradient is static, so build it once per resize and reuse it
-function drawVignette() {
-  if (!vign) {
-    vign = ctx.createRadialGradient(
-      innerWidth / 2, innerHeight / 2, innerHeight * 0.45,
-      innerWidth / 2, innerHeight / 2, innerHeight * 0.95);
-    vign.addColorStop(0, 'rgba(0,0,0,0)'); vign.addColorStop(1, 'rgba(0,0,0,.55)');
-  }
-  ctx.fillStyle = vign; ctx.fillRect(0, 0, innerWidth, innerHeight);
 }
 
 // crosshair + missile reload indicator at the mouse
